@@ -17,13 +17,15 @@ if ($form === 'payment') {
         'referral_bonus',
         'notify_btn_text',
         'notify_btn_emoji_id',
+        'user_channel_btn_text',
+        'user_channel_btn_emoji_id',
     ];
     foreach ($keys as $k) {
         if (!array_key_exists($k, $_POST)) {
             continue;
         }
         $val = trim((string)$_POST[$k]);
-        if ($k === 'notify_btn_emoji_id') {
+        if (str_contains($k, 'emoji_id')) {
             $val = preg_replace('/\D+/', '', $val);
         }
         setSetting($k, $val);
