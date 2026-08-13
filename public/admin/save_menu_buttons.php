@@ -15,6 +15,11 @@ $keys = [
     'ce_btn_referrals',
     'ce_btn_payout',
     'ce_btn_earn',
+    'ce_btn_back',
+    'ce_btn_cancel',
+    'ce_btn_agree',
+    'ce_btn_retry',
+    'ce_btn_channel',
 ];
 
 foreach ($keys as $k) {
@@ -22,13 +27,12 @@ foreach ($keys as $k) {
         continue;
     }
     $val = trim((string)$_POST[$k]);
-    // Emoji fields: digits only
     if (str_starts_with($k, 'ce_btn_')) {
         $val = preg_replace('/\D+/', '', $val);
     }
     setSetting($k, $val);
 }
 
-$_SESSION['flash'] = 'Menu buttons + custom emojis saved.';
+$_SESSION['flash'] = 'Menu buttons + premium icon IDs saved.';
 header('Location: /admin/?page=menu_buttons');
 exit;

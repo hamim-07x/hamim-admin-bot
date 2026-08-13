@@ -75,31 +75,43 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
   <?php endforeach; ?></table></div>
 
 <?php elseif ($page === 'menu_buttons'): ?>
-  <div class="page-title">Menu Buttons</div>
+  <div class="page-title">Menu Buttons + Premium Icons</div>
   <div class="card">
-    <p class="hint">Edit the 4 main keyboard labels + custom emoji ID for each screen. Emoji ID = digits only from your pack. Empty = default pack ID.</p>
+    <p class="hint">Button <b>text</b> + <b>premium emoji ID</b> (icon_custom_emoji_id). Paste digits only from your emoji pack. Empty = built-in default. Bot owner needs Telegram Premium for icons to show.</p>
     <form method="post" action="/admin/save_menu_buttons.php">
       <label>1) Wallet button text</label>
       <input name="menu_btn_wallet" value="<?= htmlspecialchars($settings['menu_btn_wallet']??'USDT Wallet') ?>">
-      <label>Wallet custom emoji ID</label>
+      <label>Wallet premium emoji ID</label>
       <input name="ce_btn_wallet" value="<?= htmlspecialchars($settings['ce_btn_wallet']??'') ?>" placeholder="5287231198098117669">
 
       <label>2) Referrals button text</label>
       <input name="menu_btn_referrals" value="<?= htmlspecialchars($settings['menu_btn_referrals']??'Referrals') ?>">
-      <label>Referrals custom emoji ID</label>
+      <label>Referrals premium emoji ID</label>
       <input name="ce_btn_referrals" value="<?= htmlspecialchars($settings['ce_btn_referrals']??'') ?>" placeholder="5332724926216428039">
 
       <label>3) Payout button text</label>
       <input name="menu_btn_payout" value="<?= htmlspecialchars($settings['menu_btn_payout']??'USDT Payout') ?>">
-      <label>Payout custom emoji ID</label>
+      <label>Payout premium emoji ID</label>
       <input name="ce_btn_payout" value="<?= htmlspecialchars($settings['ce_btn_payout']??'') ?>" placeholder="5445355530111437729">
 
       <label>4) Earn button text</label>
       <input name="menu_btn_earn" value="<?= htmlspecialchars($settings['menu_btn_earn']??'EARN MORE') ?>">
-      <label>Earn custom emoji ID</label>
+      <label>Earn premium emoji ID</label>
       <input name="ce_btn_earn" value="<?= htmlspecialchars($settings['ce_btn_earn']??'') ?>" placeholder="5310278924616356636">
 
-      <button type="submit" class="btn-full">Save Menu + Emojis</button>
+      <hr style="border:0;border-top:1px solid #333;margin:1.2rem 0">
+      <label>Back button emoji ID</label>
+      <input name="ce_btn_back" value="<?= htmlspecialchars($settings['ce_btn_back']??'') ?>" placeholder="5416041192905265756">
+      <label>Cancel button emoji ID</label>
+      <input name="ce_btn_cancel" value="<?= htmlspecialchars($settings['ce_btn_cancel']??'') ?>" placeholder="5210952531676504517">
+      <label>OK / Agree / Confirm emoji ID</label>
+      <input name="ce_btn_agree" value="<?= htmlspecialchars($settings['ce_btn_agree']??'') ?>" placeholder="5206607081334906820">
+      <label>Retry button emoji ID</label>
+      <input name="ce_btn_retry" value="<?= htmlspecialchars($settings['ce_btn_retry']??'') ?>" placeholder="5375338737028841420">
+      <label>Channel join button emoji ID</label>
+      <input name="ce_btn_channel" value="<?= htmlspecialchars($settings['ce_btn_channel']??'') ?>" placeholder="5332455502917949981">
+
+      <button type="submit" class="btn-full">Save Menu + Premium Icons</button>
     </form>
   </div>
 
