@@ -15,13 +15,19 @@ if ($form === 'payment') {
         'network',
         'rpc_url',
         'referral_bonus',
+        'notify_btn_text',
+        'notify_btn_emoji_id',
     ];
     foreach ($keys as $k) {
-        if (array_key_exists($k, $_POST)) {
-            setSetting($k, trim((string)$_POST[$k]));
+        if (!array_key_exists($k, $_POST)) {
+            continue;
         }
+        $val = trim((string)$_POST[$k]);
+        if ($k === 'notify_btn_emoji_id') {
+            $val = preg_replace('/\D+/', '', $val);
+        }
+        setSetting($k, $val);
     }
-    // keep notify_channel in sync with payment_channel for older code paths
     if (isset($_POST['payment_channel'])) {
         setSetting('notify_channel', trim((string)$_POST['payment_channel']));
     }
@@ -30,7 +36,6 @@ if ($form === 'payment') {
     exit;
 }
 
-// Bot settings (default)
 $keys = [
     'bot_token',
     'bot_username',
@@ -40,16 +45,17 @@ $keys = [
     'currency_emoji_id',
 ];
 foreach ($keys as $k) {
-    if (array_key_exists($k, $_POST)) {
-        $val = trim((string)$_POST[$k]);
-        if ($k === 'currency_emoji_id') {
-            $val = preg_replace('/\D+/', '', $val);
-        }
-        if ($k === 'bot_username') {
-            $val = ltrim($val, '@');
-        }
-        setSetting($k, $val);
+    if (!array_key_exists($k, $_POST)) {
+        continue;
     }
+    $val = trim((string)$_POST[$k]);
+    if ($k === 'currency_emoji_id') {
+        $val = preg_replace('/\D+/', '', $val);
+    }
+    if ($k === 'bot_username') {
+        $val = ltrim($val, '@');
+    }
+    setSetting($k, $val);
 }
 $_SESSION['flash'] = 'Bot settings saved.';
 header('Location: /admin/?page=settings');

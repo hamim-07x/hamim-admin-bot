@@ -101,12 +101,11 @@ function clearBotMessageIds(int $userId): void
     getDB()->prepare('UPDATE users SET bot_msgs = NULL WHERE id = ?')->execute([$userId]);
 }
 
-/** Currency premium emoji (from Bot Settings → currency_emoji_id) */
 function currencyEmoji(): string
 {
     $id = preg_replace('/\D+/', '', (string)getSetting('currency_emoji_id', ''));
     if ($id === '') {
-        $id = '5197434882321567830'; // FinanceEmoji dollar
+        $id = '5197434882321567830';
     }
     return '<tg-emoji emoji-id="' . $id . '">💵</tg-emoji>';
 }
@@ -114,7 +113,6 @@ function currencyEmoji(): string
 function ce(string $key, string $fallbackEmoji = '⭐'): string
 {
     if ($key === 'ce_balance' || $key === 'currency') {
-        // Prefer admin currency emoji id
         $cid = preg_replace('/\D+/', '', (string)getSetting('currency_emoji_id', ''));
         if ($cid !== '' && strlen($cid) >= 8) {
             return '<tg-emoji emoji-id="' . $cid . '">💵</tg-emoji>';
@@ -203,6 +201,10 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
     return '<tg-emoji emoji-id="' . $id . '">' . $inner . '</tg-emoji>';
 }
 
+/**
+ * Join checklist = ONLY channels from Admin → Channels table.
+ * Payment channel is NEVER required here (notify-only).
+ */
 function getMissingChannels(TelegramBot $bot, int $userId): array
 {
     $db = getDB();
@@ -214,14 +216,6 @@ function getMissingChannels(TelegramBot $bot, int $userId): array
         if (!$bot->isUserJoined($ch['username'], $userId)) {
             $missing[] = $ch;
         }
-    }
-    $pay = getSetting('payment_channel');
-    if ($pay && !$bot->isUserJoined($pay, $userId)) {
-        $missing[] = [
-            'title' => 'PAYMENT CHANNEL',
-            'username' => ltrim($pay, '@'),
-            'invite_link' => 'https://t.me/' . ltrim($pay, '@'),
-        ];
     }
     return $missing;
 }
