@@ -83,11 +83,23 @@ function runMigrations(): array
         $done[] = $name;
     }
 
+    // Default password: admin123
+    // IMPORTANT: use single-quoted hash so $2y$ is NOT treated as PHP variables
+    $adminHash = '$2y$10$R.8RkWvI7k58MVrnttm3/O40peeTROQnPv4C0eT5/31DlU2loOqQe';
+
     $count = (int)$db->query('SELECT COUNT(*) FROM admins')->fetchColumn();
     if ($count === 0) {
-        $db->exec("INSERT INTO `admins` (`username`, `password_hash`) VALUES
-('admin', '$2y$10$R.8RkWvI7k58MVrnttm3/O40peeTROQnPv4C0eT5/31DlU2loOqQe')");
+        $stmt = $db->prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)');
+        $stmt->execute(['admin', $adminHash]);
         $done[] = 'seed_admin';
+    } else {
+        // Repair broken hash from older double-quoted seed (password would never verify)
+        $row = $db->query("SELECT id, password_hash FROM admins WHERE username = 'admin' LIMIT 1")->fetch();
+        if ($row && !password_verify('admin123', (string)$row['password_hash'])) {
+            $stmt = $db->prepare('UPDATE admins SET password_hash = ? WHERE id = ?');
+            $stmt->execute([$adminHash, $row['id']]);
+            $done[] = 'repair_admin_password';
+        }
     }
 
     $defaults = [
