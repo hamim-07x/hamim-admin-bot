@@ -53,29 +53,108 @@ class TelegramBot
         $params = array_merge([
             'chat_id'                  => $chatId,
             'text'                     => $text,
-            'parse_mode'               => 'HTML',
             'disable_web_page_preview' => true,
         ], $extra);
-        if (empty($params['parse_mode'])) {
+
+        // entities mode: do not force HTML parse_mode
+        if (!empty($params['entities'])) {
+            unset($params['parse_mode']);
+        } elseif (empty($params['parse_mode'])) {
             $params['parse_mode'] = 'HTML';
         }
+
         return $this->request('sendMessage', $params);
     }
 
     public function sendPhoto(int|string $chatId, string $photoUrl, string $caption = '', array $extra = []): ?array
     {
         $params = array_merge([
-            'chat_id'    => $chatId,
-            'photo'      => $photoUrl,
-            'parse_mode' => 'HTML',
+            'chat_id' => $chatId,
+            'photo'   => $photoUrl,
         ], $extra);
-        if (empty($params['parse_mode'])) {
-            $params['parse_mode'] = 'HTML';
-        }
+
         if ($caption !== '') {
             $params['caption'] = $caption;
         }
+
+        if (!empty($params['caption_entities'])) {
+            unset($params['parse_mode']);
+        } elseif (empty($params['parse_mode'])) {
+            $params['parse_mode'] = 'HTML';
+        }
+
         return $this->request('sendPhoto', $params);
+    }
+
+    /**
+     * Send message with native custom_emoji entities (best chance in channels).
+     * $parts = list of ['t'=>text] or ['e'=>emojiId,'f'=>fallbackChar]
+     * Bold segments: ['b'=>true,'t'=>text]
+     */
+    public function sendRich(int|string $chatId, array $parts, array $extra = [], string $photoUrl = ''): ?array
+    {
+        $text = '';
+        $entities = [];
+
+        foreach ($parts as $p) {
+            if (isset($p['e'])) {
+                $fallback = $p['f'] ?? '⭐';
+                $offset = self::utf16Len($text);
+                $len = self::utf16Len($fallback);
+                $text .= $fallback;
+                $entities[] = [
+                    'type'            => 'custom_emoji',
+                    'offset'          => $offset,
+                    'length'          => $len,
+                    'custom_emoji_id' => (string)$p['e'],
+                ];
+                continue;
+            }
+
+            $chunk = (string)($p['t'] ?? '');
+            if ($chunk === '') {
+                continue;
+            }
+            $offset = self::utf16Len($text);
+            $len = self::utf16Len($chunk);
+            $text .= $chunk;
+
+            if (!empty($p['b'])) {
+                $entities[] = [
+                    'type'   => 'bold',
+                    'offset' => $offset,
+                    'length' => $len,
+                ];
+            }
+            if (!empty($p['code'])) {
+                $entities[] = [
+                    'type'   => 'code',
+                    'offset' => $offset,
+                    'length' => $len,
+                ];
+            }
+        }
+
+        $payload = $extra;
+        if ($photoUrl !== '' && preg_match('#^https?://#i', $photoUrl)) {
+            $payload['caption_entities'] = $entities;
+            unset($payload['parse_mode'], $payload['entities']);
+            return $this->sendPhoto($chatId, $photoUrl, $text, $payload);
+        }
+
+        $payload['entities'] = $entities;
+        unset($payload['parse_mode']);
+        return $this->sendMessage($chatId, $text, $payload);
+    }
+
+    /** UTF-16 code unit length (Telegram entity offsets) */
+    public static function utf16Len(string $s): int
+    {
+        if ($s === '') {
+            return 0;
+        }
+        $u16 = mb_convert_encoding($s, 'UTF-16LE', 'UTF-8');
+        return (int)(strlen($u16) / 2);
     }
 
     public function deleteMessage(int|string $chatId, int $messageId): ?array
@@ -137,7 +216,7 @@ class TelegramBot
             'keyboard'          => $rows,
             'resize_keyboard'   => $resize,
             'one_time_keyboard' => false,
-            'is_persistent'     => true, // always show menu keyboard
+            'is_persistent'     => true,
         ];
     }
 

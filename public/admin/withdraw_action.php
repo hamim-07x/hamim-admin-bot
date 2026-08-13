@@ -81,11 +81,24 @@ function channelPublicLink(string $channel): string
     return 'https://t.me/' . ltrim($channel, '@');
 }
 
-function notifySend(TelegramBot $bot, string|int $chatId, string $html, string $photoUrl = '', array $extra = []): bool
+/** Resolve emoji id digits for a ce_ key */
+function emojiIdFor(string $key, string $default): string
+{
+    $id = '';
+    try {
+        $id = preg_replace('/\D+/', '', (string)getSetting($key, ''));
+    } catch (Throwable $e) {
+    }
+    if ($id === '' || strlen($id) < 8) {
+        $id = $default;
+    }
+    return $id;
+}
+
+function notifySendHtml(TelegramBot $bot, string|int $chatId, string $html, string $photoUrl = '', array $extra = []): bool
 {
     $extra['parse_mode'] = 'HTML';
     $extra['disable_web_page_preview'] = true;
-
     $res = null;
     if ($photoUrl !== '' && preg_match('#^https?://#i', $photoUrl)) {
         $res = $bot->sendPhoto($chatId, $photoUrl, $html, $extra);
@@ -95,8 +108,6 @@ function notifySend(TelegramBot $bot, string|int $chatId, string $html, string $
     if ($res && ($res['ok'] ?? false)) {
         return true;
     }
-
-    // Retry plain (if custom emoji blocked)
     $plain = preg_replace('/<tg-emoji\s+emoji-id="\d+">(.*?)<\/tg-emoji>/su', '$1', $html) ?? $html;
     if ($photoUrl !== '' && preg_match('#^https?://#i', $photoUrl)) {
         $res = $bot->sendPhoto($chatId, $photoUrl, $plain, $extra);
@@ -104,6 +115,69 @@ function notifySend(TelegramBot $bot, string|int $chatId, string $html, string $
         $res = $bot->sendMessage($chatId, $plain, $extra);
     }
     return (bool)($res && ($res['ok'] ?? false));
+}
+
+/**
+ * Channel notify with native custom_emoji entities (same look as personal chat).
+ */
+function notifyChannelRich(TelegramBot $bot, string $chat, array $ctx, string $photoUrl, array $extra): bool
+{
+    $idOk   = emojiIdFor('ce_payout_ok', '5206607081334906820');
+    $idBal  = emojiIdFor('currency_emoji_id', emojiIdFor('ce_balance', '5197434882321567830'));
+    $idCard = emojiIdFor('ce_card', '5445353829304387411');
+    $idNet  = emojiIdFor('ce_network', '5224450179368767019');
+    $idRec  = emojiIdFor('ce_receipt', '5444856076954520455');
+    $idUser = emojiIdFor('ce_ref_1', '5332724926216428039');
+
+    $parts = [
+        ['e' => $idOk, 'f' => '✅'],
+        ['t' => ' '],
+        ['b' => true, 't' => 'Payout successful'],
+        ['t' => "\n\n"],
+        ['e' => $idUser, 'f' => '👤'],
+        ['t' => ' User: '],
+        ['b' => true, 't' => $ctx['displayName']],
+        ['t' => ' (' . $ctx['handle'] . ")\n"],
+        ['t' => 'ID: '],
+        ['code' => true, 't' => (string)$ctx['userId']],
+        ['t' => "\n\n"],
+        ['e' => $idBal, 'f' => '💵'],
+        ['t' => ' Amount: '],
+        ['b' => true, 't' => $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c']],
+        ['t' => "\n"],
+        ['e' => $idCard, 'f' => '💳'],
+        ['t' => " Address:\n"],
+        ['code' => true, 't' => $ctx['address']],
+        ['t' => "\n"],
+        ['e' => $idNet, 'f' => '🌐'],
+        ['t' => ' Network: '],
+        ['b' => true, 't' => $ctx['network']],
+        ['t' => "\n"],
+        ['e' => $idRec, 'f' => '🧾'],
+        ['t' => ' Status: '],
+        ['b' => true, 't' => strtoupper($ctx['status'])],
+        ['t' => "\n"],
+        ['e' => $idRec, 'f' => '🧾'],
+        ['t' => ' Withdrawal: '],
+        ['b' => true, 't' => '#' . $ctx['id']],
+    ];
+
+    $res = $bot->sendRich($chat, $parts, $extra, $photoUrl);
+    if ($res && ($res['ok'] ?? false)) {
+        return true;
+    }
+
+    // Fallback HTML (same text as personal)
+    $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
+    $html .= ce('ce_ref_1') . ' User: <b>' . htmlspecialchars($ctx['displayName']) . '</b> (' . htmlspecialchars($ctx['handle']) . ")\n";
+    $html .= 'ID: <code>' . $ctx['userId'] . "</code>\n\n";
+    $html .= ce('ce_balance') . ' Amount: <b>' . $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c'] . "</b>\n";
+    $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($ctx['address']) . "</code>\n";
+    $html .= ce('ce_network') . ' Network: <b>' . htmlspecialchars($ctx['network']) . "</b>\n";
+    $html .= ce('ce_receipt') . ' Status: <b>' . strtoupper($ctx['status']) . "</b>\n";
+    $html .= ce('ce_receipt') . ' Withdrawal: <b>#' . $ctx['id'] . '</b>';
+
+    return notifySendHtml($bot, $chat, $html, $photoUrl, $extra);
 }
 
 if ($action === 'reject') {
@@ -115,7 +189,7 @@ if ($action === 'reject') {
         $msg = ce('ce_payout_no') . " <b>Payout rejected</b>\n\n";
         $msg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
         $msg .= 'Your balance has been refunded.';
-        notifySend($bot, $userId, $msg);
+        notifySendHtml($bot, $userId, $msg);
     }
     $_SESSION['flash'] = "Withdrawal #{$id} rejected (balance refunded).";
     header('Location: /admin/?page=withdrawals');
@@ -149,14 +223,13 @@ if ($payChannelRaw === '') {
 $chat = normalizeChannelChat($payChannelRaw);
 $channelLink = channelPublicLink($payChannelRaw);
 
-// Same body style for user + channel (personal-chat style)
+// Personal chat style (HTML tg-emoji — works well in private)
 $coreMsg  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
 $coreMsg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
 $coreMsg .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
 $coreMsg .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
 $coreMsg .= ce('ce_receipt') . ' Status: <b>' . strtoupper($newStatus) . '</b>';
 
-// USER DM
 if (getSetting('user_payout_alert', '1') === '1') {
     $userExtra = [];
     if ($channelLink !== '') {
@@ -171,30 +244,20 @@ if (getSetting('user_payout_alert', '1') === '1') {
         }
         $userExtra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
     }
-    $userOk = notifySend($bot, $userId, $coreMsg, $successPhoto, $userExtra);
+    $userOk = notifySendHtml($bot, $userId, $coreMsg, $successPhoto, $userExtra);
     if (!$userOk) {
         $notes[] = 'user DM failed';
     }
 }
 
-// CHANNEL — same style as personal chat + user line + Start Bot
 if ($chat !== '') {
-    $chMsg  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
-    $chMsg .= ce('ce_ref_1') . " User: <b>" . htmlspecialchars($displayName) . "</b> (" . htmlspecialchars($handle) . ")\n";
-    $chMsg .= "ID: <code>{$userId}</code>\n\n";
-    $chMsg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
-    $chMsg .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-    $chMsg .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
-    $chMsg .= ce('ce_receipt') . ' Status: <b>' . strtoupper($newStatus) . '</b>';
-    $chMsg .= "\n" . ce('ce_receipt') . " Withdrawal: <b>#{$id}</b>";
-
     $botUser = ltrim((string)getSetting('bot_username', ''), '@');
     $btnText = trim((string)getSetting('notify_btn_text', 'Start Bot'));
     if ($btnText === '') {
         $btnText = 'Start Bot';
     }
     $btnIcon = preg_replace('/\D+/', '', (string)getSetting('notify_btn_emoji_id', '5416041192905265756'));
-    $extra = [];
+    $extra = ['disable_web_page_preview' => true];
     if ($botUser !== '') {
         $btn = [
             'text' => $btnText,
@@ -206,9 +269,22 @@ if ($chat !== '') {
         $extra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
     }
 
-    $channelOk = notifySend($bot, $chat, $chMsg, $successPhoto, $extra);
+    $ctx = [
+        'displayName' => $displayName,
+        'handle'      => $handle,
+        'userId'      => $userId,
+        's'           => $s,
+        'amount'      => $amount,
+        'c'           => $c,
+        'address'     => $address,
+        'network'     => $network,
+        'status'      => $newStatus,
+        'id'          => $id,
+    ];
+
+    $channelOk = notifyChannelRich($bot, $chat, $ctx, $successPhoto, $extra);
     if (!$channelOk) {
-        $notes[] = 'channel notify failed';
+        $notes[] = 'channel notify failed (bot admin? @username?)';
     }
 }
 
