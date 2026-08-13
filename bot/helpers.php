@@ -3,7 +3,6 @@
 
 function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, string $imgKey = '', array $extra = []): void
 {
-    // Delete ALL previous bot messages before new page (clean navigation)
     deleteAllBotMessages($bot, $chatId, $userId);
 
     $photo = '';
@@ -14,7 +13,6 @@ function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, strin
     $extra['parse_mode'] = 'HTML';
     $extra['disable_web_page_preview'] = true;
 
-    // Ensure any leftover reply keyboard is removed when showing inline UI
     if (empty($extra['reply_markup'])) {
         $extra['reply_markup'] = TelegramBot::removeKeyboard();
     }
@@ -90,7 +88,6 @@ function pushBotMessageId(int $userId, int $messageId): void
     ensureMsgColumns();
     $ids = getBotMessageIds($userId);
     $ids[] = $messageId;
-    // safety cap
     if (count($ids) > 5) {
         $ids = array_slice($ids, -5);
     }
@@ -104,8 +101,26 @@ function clearBotMessageIds(int $userId): void
     getDB()->prepare('UPDATE users SET bot_msgs = NULL WHERE id = ?')->execute([$userId]);
 }
 
+/** Currency premium emoji (from Bot Settings → currency_emoji_id) */
+function currencyEmoji(): string
+{
+    $id = preg_replace('/\D+/', '', (string)getSetting('currency_emoji_id', ''));
+    if ($id === '') {
+        $id = '5197434882321567830'; // FinanceEmoji dollar
+    }
+    return '<tg-emoji emoji-id="' . $id . '">💵</tg-emoji>';
+}
+
 function ce(string $key, string $fallbackEmoji = '⭐'): string
 {
+    if ($key === 'ce_balance' || $key === 'currency') {
+        // Prefer admin currency emoji id
+        $cid = preg_replace('/\D+/', '', (string)getSetting('currency_emoji_id', ''));
+        if ($cid !== '' && strlen($cid) >= 8) {
+            return '<tg-emoji emoji-id="' . $cid . '">💵</tg-emoji>';
+        }
+    }
+
     static $defaults = [
         'ce_welcome_1'  => '5438496463044752972',
         'ce_welcome_2'  => '5287231198098117669',
