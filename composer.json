@@ -1,0 +1,7 @@
+{
+  "name": "hamim/admin-bot",
+  "description": "Telegram bot with web admin",
+  "require": {
+    "php": ">=8.1"
+  }
+}
