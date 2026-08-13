@@ -1,8 +1,11 @@
 <?php
-/* Message helpers: photo + auto-delete + custom emoji */
+/* Message helpers: photo + auto-delete + custom emoji — inline only UI */
 
-function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, string $imgKey = '', array $extra = [], bool $keepReplyKeyboard = true): void
+function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, string $imgKey = '', array $extra = []): void
 {
+    // Delete ALL previous bot messages before new page (clean navigation)
+    deleteAllBotMessages($bot, $chatId, $userId);
+
     $photo = '';
     if ($imgKey !== '' && getSetting($imgKey . '_on', '0') === '1') {
         $photo = trim((string)getSetting($imgKey, ''));
@@ -11,9 +14,9 @@ function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, strin
     $extra['parse_mode'] = 'HTML';
     $extra['disable_web_page_preview'] = true;
 
-    // Always re-attach persistent main menu unless caller set inline actions
-    if ($keepReplyKeyboard && empty($extra['reply_markup'])) {
-        $extra['reply_markup'] = TelegramBot::mainMenuKeyboardFromLabels(menuLabelsSafe());
+    // Ensure any leftover reply keyboard is removed when showing inline UI
+    if (empty($extra['reply_markup'])) {
+        $extra['reply_markup'] = TelegramBot::removeKeyboard();
     }
 
     $res = null;
@@ -37,23 +40,7 @@ function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, strin
     $mid = $res['result']['message_id'] ?? null;
     if ($mid) {
         pushBotMessageId($userId, (int)$mid);
-        // Keep only last 2 bot messages — delete older ones
-        pruneBotMessages($bot, $chatId, $userId, 2);
     }
-}
-
-function menuLabelsSafe(): array
-{
-    if (function_exists('menuLabels')) {
-        return menuLabels();
-    }
-    $c = getSetting('currency_name', 'USDT');
-    return [
-        'wallet' => getSetting('menu_btn_wallet', $c . ' Wallet'),
-        'referrals' => getSetting('menu_btn_referrals', 'Referrals'),
-        'payout' => getSetting('menu_btn_payout', $c . ' Payout'),
-        'earn' => getSetting('menu_btn_earn', 'EARN MORE'),
-    ];
 }
 
 function stripTgEmoji(string $html): string
@@ -61,22 +48,15 @@ function stripTgEmoji(string $html): string
     return preg_replace('/<tg-emoji\s+emoji-id="\d+">(.*?)<\/tg-emoji>/su', '$1', $html) ?? $html;
 }
 
-function pruneBotMessages(TelegramBot $bot, int $chatId, int $userId, int $max = 2): void
+function deleteAllBotMessages(TelegramBot $bot, int $chatId, int $userId): void
 {
-    $ids = getBotMessageIds($userId);
-    if (count($ids) <= $max) {
-        return;
-    }
-    $toDelete = array_slice($ids, 0, count($ids) - $max);
-    $remain = array_slice($ids, -$max);
-    foreach ($toDelete as $mid) {
+    foreach (getBotMessageIds($userId) as $mid) {
         try {
             $bot->deleteMessage($chatId, (int)$mid);
         } catch (Throwable $e) {
         }
     }
-    getDB()->prepare('UPDATE users SET bot_msgs = ? WHERE id = ?')
-        ->execute([json_encode(array_values($remain)), $userId]);
+    clearBotMessageIds($userId);
 }
 
 function ensureMsgColumns(): void
@@ -110,6 +90,10 @@ function pushBotMessageId(int $userId, int $messageId): void
     ensureMsgColumns();
     $ids = getBotMessageIds($userId);
     $ids[] = $messageId;
+    // safety cap
+    if (count($ids) > 5) {
+        $ids = array_slice($ids, -5);
+    }
     getDB()->prepare('UPDATE users SET bot_msgs = ? WHERE id = ?')
         ->execute([json_encode($ids), $userId]);
 }
@@ -120,11 +104,6 @@ function clearBotMessageIds(int $userId): void
     getDB()->prepare('UPDATE users SET bot_msgs = NULL WHERE id = ?')->execute([$userId]);
 }
 
-/**
- * Custom premium emoji HTML.
- * Menu button emojis: ce_btn_wallet / ce_btn_referrals / ce_btn_payout / ce_btn_earn
- * (editable from Admin → Menu Buttons)
- */
 function ce(string $key, string $fallbackEmoji = '⭐'): string
 {
     static $defaults = [
@@ -159,7 +138,6 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
         'ce_fire'       => '5424972470023104089',
         'ce_chart'      => '5197503331215361533',
         'ce_receipt'    => '5444856076954520455',
-        // Menu button screen emojis (admin editable)
         'ce_btn_wallet'    => '5287231198098117669',
         'ce_btn_referrals' => '5332724926216428039',
         'ce_btn_payout'    => '5445355530111437729',
@@ -167,8 +145,8 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
     ];
 
     static $emojiFallback = [
-        'ce_welcome_1'  => '⭐', 'ce_welcome_2' => '💰', 'ce_welcome_3' => '🔗',
-        'ce_welcome_4'  => '💵', 'ce_welcome_5' => '⚠️', 'ce_welcome_6' => '✅',
+        'ce_welcome_1' => '⭐', 'ce_welcome_2' => '💰', 'ce_welcome_3' => '🔗',
+        'ce_welcome_4' => '💵', 'ce_welcome_5' => '⚠️', 'ce_welcome_6' => '✅',
         'ce_join_1' => '🏦', 'ce_join_2' => '💬', 'ce_join_ok' => '✅', 'ce_join_no' => '❌',
         'ce_retry' => '🔄', 'ce_menu_1' => '🏠', 'ce_wallet_1' => '💰', 'ce_balance' => '💵',
         'ce_ref_1' => '📇', 'ce_ref_2' => '🔗', 'ce_ref_rocket' => '🚀', 'ce_ref_gift' => '🎉',
@@ -179,17 +157,13 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
         'ce_btn_wallet' => '💰', 'ce_btn_referrals' => '👥', 'ce_btn_payout' => '📤', 'ce_btn_earn' => '🎯',
     ];
 
-    // Map screen keys to admin menu-button emoji overrides
     $alias = [
         'ce_wallet_1' => 'ce_btn_wallet',
         'ce_ref_1'    => 'ce_btn_referrals',
         'ce_payout_1' => 'ce_btn_payout',
         'ce_earn_1'   => 'ce_btn_earn',
     ];
-    $lookupKey = $key;
-    if (isset($alias[$key])) {
-        $lookupKey = $alias[$key];
-    }
+    $lookupKey = $alias[$key] ?? $key;
 
     $id = '';
     try {
