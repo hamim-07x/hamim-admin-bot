@@ -1,8 +1,7 @@
 <?php
 /**
- * One-time setup: creates all tables + default admin
- * Visit: https://YOUR-APP.up.railway.app/setup.php
- * Also repairs admin password to admin / admin123 if broken.
+ * Setup + repair admin password
+ * Visit once: /setup.php
  */
 require_once __DIR__ . '/../config/bootstrap.php';
 require_once __DIR__ . '/../config/migrate.php';
@@ -11,25 +10,28 @@ header('Content-Type: application/json; charset=utf-8');
 
 try {
     $done = runMigrations();
-
-    // Always ensure admin/admin123 works after setup
-    $adminHash = '$2y$10$R.8RkWvI7k58MVrnttm3/O40peeTROQnPv4C0eT5/31DlU2loOqQe';
     $db = getDB();
-    $row = $db->query("SELECT id, password_hash FROM admins WHERE username = 'admin' LIMIT 1")->fetch();
-    if (!$row) {
-        $stmt = $db->prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)');
-        $stmt->execute(['admin', $adminHash]);
-        $done[] = 'force_seed_admin';
-    } elseif (!password_verify('admin123', (string)$row['password_hash'])) {
-        $stmt = $db->prepare('UPDATE admins SET password_hash = ? WHERE id = ?');
-        $stmt->execute([$adminHash, $row['id']]);
-        $done[] = 'force_repair_admin';
+
+    // Always re-hash admin123 at runtime (never trust static broken hashes)
+    $hash = password_hash('admin123', PASSWORD_DEFAULT);
+    $row = $db->query("SELECT id FROM admins WHERE username = 'admin' LIMIT 1")->fetch();
+    if ($row) {
+        $db->prepare('UPDATE admins SET password_hash = ? WHERE id = ?')->execute([$hash, $row['id']]);
+        $done[] = 'admin_password_reset';
+    } else {
+        $db->prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)')->execute(['admin', $hash]);
+        $done[] = 'admin_created';
     }
+
+    // Verify it works
+    $check = $db->query("SELECT password_hash FROM admins WHERE username = 'admin' LIMIT 1")->fetch();
+    $verifyOk = $check && password_verify('admin123', (string)$check['password_hash']);
 
     echo json_encode([
         'ok' => true,
         'message' => 'Database ready',
         'created' => $done,
+        'password_verify_admin123' => $verifyOk ? 'OK' : 'FAIL',
         'admin' => 'admin / admin123',
         'next' => 'Open /admin/login.php and login',
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
