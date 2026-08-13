@@ -56,7 +56,6 @@ class TelegramBot
             'parse_mode'               => 'HTML',
             'disable_web_page_preview' => true,
         ], $extra);
-        // Never let callers drop HTML — needed for <tg-emoji>
         if (empty($params['parse_mode'])) {
             $params['parse_mode'] = 'HTML';
         }
@@ -138,6 +137,7 @@ class TelegramBot
             'keyboard'          => $rows,
             'resize_keyboard'   => $resize,
             'one_time_keyboard' => false,
+            'is_persistent'     => true, // always show menu keyboard
         ];
     }
 

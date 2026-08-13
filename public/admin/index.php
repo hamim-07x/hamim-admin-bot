@@ -9,7 +9,6 @@ $nav = [
   'channels' => 'Channels',
   'menu_buttons' => 'Menu Buttons',
   'messages' => 'Message Images',
-  'emojis' => 'Custom Emojis',
   'users' => 'Users',
   'withdrawals' => 'Withdrawals',
   'webhook' => 'Webhook',
@@ -77,13 +76,32 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
 
 <?php elseif ($page === 'menu_buttons'): ?>
   <div class="page-title">Menu Buttons</div>
-  <div class="card"><form method="post" action="/admin/save_menu_buttons.php">
-    <label>Wallet</label><input name="menu_btn_wallet" value="<?= htmlspecialchars($settings['menu_btn_wallet']??'USDT Wallet') ?>">
-    <label>Referrals</label><input name="menu_btn_referrals" value="<?= htmlspecialchars($settings['menu_btn_referrals']??'Referrals') ?>">
-    <label>Payout</label><input name="menu_btn_payout" value="<?= htmlspecialchars($settings['menu_btn_payout']??'USDT Payout') ?>">
-    <label>Earn</label><input name="menu_btn_earn" value="<?= htmlspecialchars($settings['menu_btn_earn']??'EARN MORE') ?>">
-    <button type="submit" class="btn-full">Save Menu</button>
-  </form></div>
+  <div class="card">
+    <p class="hint">Edit the 4 main keyboard labels + custom emoji ID for each screen. Emoji ID = digits only from your pack. Empty = default pack ID.</p>
+    <form method="post" action="/admin/save_menu_buttons.php">
+      <label>1) Wallet button text</label>
+      <input name="menu_btn_wallet" value="<?= htmlspecialchars($settings['menu_btn_wallet']??'USDT Wallet') ?>">
+      <label>Wallet custom emoji ID</label>
+      <input name="ce_btn_wallet" value="<?= htmlspecialchars($settings['ce_btn_wallet']??'') ?>" placeholder="5287231198098117669">
+
+      <label>2) Referrals button text</label>
+      <input name="menu_btn_referrals" value="<?= htmlspecialchars($settings['menu_btn_referrals']??'Referrals') ?>">
+      <label>Referrals custom emoji ID</label>
+      <input name="ce_btn_referrals" value="<?= htmlspecialchars($settings['ce_btn_referrals']??'') ?>" placeholder="5332724926216428039">
+
+      <label>3) Payout button text</label>
+      <input name="menu_btn_payout" value="<?= htmlspecialchars($settings['menu_btn_payout']??'USDT Payout') ?>">
+      <label>Payout custom emoji ID</label>
+      <input name="ce_btn_payout" value="<?= htmlspecialchars($settings['ce_btn_payout']??'') ?>" placeholder="5445355530111437729">
+
+      <label>4) Earn button text</label>
+      <input name="menu_btn_earn" value="<?= htmlspecialchars($settings['menu_btn_earn']??'EARN MORE') ?>">
+      <label>Earn custom emoji ID</label>
+      <input name="ce_btn_earn" value="<?= htmlspecialchars($settings['ce_btn_earn']??'') ?>" placeholder="5310278924616356636">
+
+      <button type="submit" class="btn-full">Save Menu + Emojis</button>
+    </form>
+  </div>
 
 <?php elseif ($page === 'messages'): ?>
   <div class="page-title">Message Images</div>
@@ -93,16 +111,6 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
       <label><input type="checkbox" name="<?= $k ?>_on" value="1" <?= ($settings[$k.'_on']??'0')==='1'?'checked':'' ?>> Enable image for <?= $lab ?></label>
     <?php endforeach; ?>
     <button type="submit" class="btn-full">Save Images</button>
-  </form></div>
-
-<?php elseif ($page === 'emojis'): ?>
-  <div class="page-title">Custom Emojis</div>
-  <div class="card"><p class="hint">Paste emoji ID digits only. Empty = built-in defaults.</p>
-  <form method="post" action="/admin/save_custom_emojis.php">
-    <?php foreach (['ce_welcome_1'=>'Welcome 1','ce_welcome_2'=>'Welcome 2','ce_welcome_3'=>'Welcome 3','ce_welcome_4'=>'Welcome 4','ce_welcome_5'=>'Welcome 5','ce_welcome_6'=>'Welcome 6','ce_join_1'=>'Join','ce_menu_1'=>'Menu','ce_wallet_1'=>'Wallet','ce_balance'=>'Balance','ce_ref_1'=>'Referrals','ce_payout_1'=>'Payout','ce_earn_1'=>'Earn'] as $k=>$lab): ?>
-      <label><?= $lab ?></label><input name="<?= $k ?>" value="<?= htmlspecialchars($settings[$k]??'') ?>">
-    <?php endforeach; ?>
-    <button type="submit" class="btn-full">Save Emoji IDs</button>
   </form></div>
 
 <?php elseif ($page === 'users'): ?>
