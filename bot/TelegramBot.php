@@ -19,6 +19,12 @@ class TelegramBot
         if (isset($params['reply_markup']) && is_array($params['reply_markup'])) {
             $params['reply_markup'] = json_encode($params['reply_markup'], JSON_UNESCAPED_UNICODE);
         }
+        if (isset($params['entities']) && is_array($params['entities'])) {
+            $params['entities'] = json_encode($params['entities'], JSON_UNESCAPED_UNICODE);
+        }
+        if (isset($params['caption_entities']) && is_array($params['caption_entities'])) {
+            $params['caption_entities'] = json_encode($params['caption_entities'], JSON_UNESCAPED_UNICODE);
+        }
 
         $url = $this->api . $method;
         $ch = curl_init($url);
@@ -44,11 +50,17 @@ class TelegramBot
 
     public function sendMessage(int|string $chatId, string $text, array $extra = []): ?array
     {
-        return $this->request('sendMessage', array_merge([
-            'chat_id'    => $chatId,
-            'text'       => $text,
-            'parse_mode' => 'HTML',
-        ], $extra));
+        $params = array_merge([
+            'chat_id'                  => $chatId,
+            'text'                     => $text,
+            'parse_mode'               => 'HTML',
+            'disable_web_page_preview' => true,
+        ], $extra);
+        // Never let callers drop HTML — needed for <tg-emoji>
+        if (empty($params['parse_mode'])) {
+            $params['parse_mode'] = 'HTML';
+        }
+        return $this->request('sendMessage', $params);
     }
 
     public function sendPhoto(int|string $chatId, string $photoUrl, string $caption = '', array $extra = []): ?array
@@ -58,6 +70,9 @@ class TelegramBot
             'photo'      => $photoUrl,
             'parse_mode' => 'HTML',
         ], $extra);
+        if (empty($params['parse_mode'])) {
+            $params['parse_mode'] = 'HTML';
+        }
         if ($caption !== '') {
             $params['caption'] = $caption;
         }
