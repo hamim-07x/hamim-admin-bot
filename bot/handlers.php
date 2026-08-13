@@ -18,6 +18,18 @@ function handleUpdate(array $update): void
     }
 }
 
+/** One-shot: hide any leftover reply keyboard from older bot versions */
+function stripReplyKeyboard(TelegramBot $bot, int $chatId): void
+{
+    try {
+        $bot->sendMessage($chatId, 'ᅠ', [ // invisible-ish spacer
+            'reply_markup' => TelegramBot::removeKeyboard(),
+            'disable_notification' => true,
+        ]);
+    } catch (Throwable $e) {
+    }
+}
+
 function handleMessage(TelegramBot $bot, array $message): void
 {
     $chatId = $message['chat']['id'];
@@ -37,7 +49,8 @@ function handleMessage(TelegramBot $bot, array $message): void
             applyReferral($userId, $parts[1]);
         }
         clearBotState($userId);
-        // remove any old reply keyboard leftover
+        stripReplyKeyboard($bot, (int)$chatId);
+
         if (!userHasAgreed($userId)) {
             showWelcomeAgree($bot, $chatId, $from);
             return;
@@ -99,7 +112,6 @@ function handleMessage(TelegramBot $bot, array $message): void
         return;
     }
 
-    // Any other text → main menu (inline)
     showMainMenu($bot, $chatId, $userId);
 }
 
@@ -143,10 +155,9 @@ function handleCallback(TelegramBot $bot, array $cb): void
         return;
     }
 
-    // Main menu navigation (inline)
     if ($data === 'nav_wallet') {
         $bot->answerCallback($cbId);
-        if (!gateUser($bot, $cbId, $chatId, $userId, $cb['from'])) {
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
         showWallet($bot, $chatId, $userId);
@@ -154,7 +165,7 @@ function handleCallback(TelegramBot $bot, array $cb): void
     }
     if ($data === 'nav_referrals') {
         $bot->answerCallback($cbId);
-        if (!gateUser($bot, $cbId, $chatId, $userId, $cb['from'])) {
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
         showReferrals($bot, $chatId, $userId);
@@ -162,7 +173,7 @@ function handleCallback(TelegramBot $bot, array $cb): void
     }
     if ($data === 'nav_payout') {
         $bot->answerCallback($cbId);
-        if (!gateUser($bot, $cbId, $chatId, $userId, $cb['from'])) {
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
         startWithdrawFlow($bot, $chatId, $userId);
@@ -170,7 +181,7 @@ function handleCallback(TelegramBot $bot, array $cb): void
     }
     if ($data === 'nav_earn') {
         $bot->answerCallback($cbId);
-        if (!gateUser($bot, $cbId, $chatId, $userId, $cb['from'])) {
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
         showEarnMore($bot, $chatId, $userId);
@@ -186,7 +197,7 @@ function handleCallback(TelegramBot $bot, array $cb): void
 
     if ($data === 'wd_continue') {
         $bot->answerCallback($cbId);
-        if (!gateUser($bot, $cbId, $chatId, $userId, $cb['from'])) {
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
         askWithdrawAddress($bot, $chatId, $userId);
@@ -195,7 +206,7 @@ function handleCallback(TelegramBot $bot, array $cb): void
 
     if ($data === 'wd_confirm' || $data === 'wd_max') {
         $bot->answerCallback($cbId);
-        if (!gateUser($bot, $cbId, $chatId, $userId, $cb['from'])) {
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
         processWithdraw($bot, $chatId, $userId);
@@ -205,18 +216,15 @@ function handleCallback(TelegramBot $bot, array $cb): void
     $bot->answerCallback($cbId);
 }
 
-/** Agree + channel gate for callbacks. Returns false if blocked by gate (already answered). */
-function gateUser(TelegramBot $bot, string $cbId, int $chatId, int $userId, array $from): bool
+function gateOk(TelegramBot $bot, int $chatId, int $userId, array $from): bool
 {
     if (!userHasAgreed($userId)) {
-        $bot->answerCallback($cbId, 'Please agree first', true);
         showWelcomeAgree($bot, $chatId, $from);
         return false;
     }
     $missing = getMissingChannels($bot, $userId);
     if ($missing) {
         markUserJoined($userId, false);
-        $bot->answerCallback($cbId, 'Join channels first', true);
         showJoinFailed($bot, $chatId, $userId, $missing);
         return false;
     }
