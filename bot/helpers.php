@@ -1,16 +1,30 @@
 <?php
 /* Message helpers: photo + auto-delete + custom emoji */
 
-function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, string $imgKey = '', array $extra = []): void
+function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, string $imgKey = '', array $extra = [], bool $keepReplyKeyboard = true): void
 {
-    deleteOldBotMessages($bot, $chatId, $userId);
+    // Keep only last 1 previous bot message, then send new = max 2 total after send
+    deleteOldBotMessages($bot, $chatId, $userId, 1);
+
     $photo = '';
     if ($imgKey !== '' && getSetting($imgKey . '_on', '0') === '1') {
         $photo = trim((string)getSetting($imgKey, ''));
     }
 
-    // Always force HTML so <tg-emoji> works
     $extra['parse_mode'] = 'HTML';
+    $extra['disable_web_page_preview'] = true;
+
+    // Always keep main reply keyboard visible (unless caller already set reply_markup keyboard
+    // or explicitly disabled — e.g. withdraw address input can still keep it)
+    if ($keepReplyKeyboard && empty($extra['reply_markup'])) {
+        $extra['reply_markup'] = TelegramBot::mainMenuKeyboardFromLabels(menuLabelsSafe());
+    } elseif ($keepReplyKeyboard && isset($extra['reply_markup']['inline_keyboard'])) {
+        // Telegram allows only one reply_markup; prefer inline for action buttons,
+        // but re-send reply keyboard in a follow-up is heavy — instead attach reply keyboard
+        // by converting: keep inline as-is (reply keyboard from earlier messages usually stays).
+        // Force re-show reply keyboard by merging is NOT supported in one message.
+        // So we send reply keyboard only when no inline; when inline exists keyboard stays from before.
+    }
 
     $res = null;
     if ($photo !== '' && preg_match('#^https?://#i', $photo)) {
@@ -19,7 +33,7 @@ function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, strin
         $res = $bot->sendMessage($chatId, $text, $extra);
     }
 
-    // If Telegram rejects custom emoji / HTML, retry once without tg-emoji tags
+    // Retry without tg-emoji if API rejects custom emoji
     if (!$res || !($res['ok'] ?? false)) {
         $plain = stripTgEmoji($text);
         if ($plain !== $text) {
@@ -34,21 +48,60 @@ function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, strin
     $mid = $res['result']['message_id'] ?? null;
     if ($mid) {
         pushBotMessageId($userId, (int)$mid);
+        // After send, if more than 2 stored ids, delete oldest
+        pruneBotMessages($bot, $chatId, $userId, 2);
     }
 }
 
-/** Remove <tg-emoji> wrappers, keep inner fallback character */
+function menuLabelsSafe(): array
+{
+    if (function_exists('menuLabels')) {
+        return menuLabels();
+    }
+    $c = getSetting('currency_name', 'USDT');
+    return [
+        'wallet' => getSetting('menu_btn_wallet', $c . ' Wallet'),
+        'referrals' => getSetting('menu_btn_referrals', 'Referrals'),
+        'payout' => getSetting('menu_btn_payout', $c . ' Payout'),
+        'earn' => getSetting('menu_btn_earn', 'EARN MORE'),
+    ];
+}
+
 function stripTgEmoji(string $html): string
 {
     return preg_replace('/<tg-emoji\s+emoji-id="\d+">(.*?)<\/tg-emoji>/su', '$1', $html) ?? $html;
 }
 
-function deleteOldBotMessages(TelegramBot $bot, int $chatId, int $userId): void
+function deleteOldBotMessages(TelegramBot $bot, int $chatId, int $userId, int $keep = 0): void
 {
-    foreach (getBotMessageIds($userId) as $mid) {
+    $ids = getBotMessageIds($userId);
+    if ($keep > 0 && count($ids) > $keep) {
+        $toDelete = array_slice($ids, 0, count($ids) - $keep);
+        $remain = array_slice($ids, -$keep);
+    } else {
+        $toDelete = $ids;
+        $remain = [];
+    }
+    foreach ($toDelete as $mid) {
         try { $bot->deleteMessage($chatId, (int)$mid); } catch (Throwable $e) {}
     }
-    clearBotMessageIds($userId);
+    if ($remain) {
+        getDB()->prepare('UPDATE users SET bot_msgs = ? WHERE id = ?')->execute([json_encode(array_values($remain)), $userId]);
+    } else {
+        clearBotMessageIds($userId);
+    }
+}
+
+function pruneBotMessages(TelegramBot $bot, int $chatId, int $userId, int $max = 2): void
+{
+    $ids = getBotMessageIds($userId);
+    if (count($ids) <= $max) return;
+    $toDelete = array_slice($ids, 0, count($ids) - $max);
+    $remain = array_slice($ids, -$max);
+    foreach ($toDelete as $mid) {
+        try { $bot->deleteMessage($chatId, (int)$mid); } catch (Throwable $e) {}
+    }
+    getDB()->prepare('UPDATE users SET bot_msgs = ? WHERE id = ?')->execute([json_encode(array_values($remain)), $userId]);
 }
 
 function ensureMsgColumns(): void
@@ -69,7 +122,8 @@ function getBotMessageIds(int $userId): array
     ensureMsgColumns();
     $stmt = getDB()->prepare('SELECT bot_msgs FROM users WHERE id = ?');
     $stmt->execute([$userId]);
-    $d = json_decode((string)($stmt->fetch()['bot_msgs'] ?? ''), true);
+    $row = $stmt->fetch();
+    $d = json_decode((string)($row['bot_msgs'] ?? ''), true);
     return is_array($d) ? $d : [];
 }
 
@@ -78,7 +132,6 @@ function pushBotMessageId(int $userId, int $messageId): void
     ensureMsgColumns();
     $ids = getBotMessageIds($userId);
     $ids[] = $messageId;
-    if (count($ids) > 3) $ids = array_slice($ids, -3);
     getDB()->prepare('UPDATE users SET bot_msgs = ? WHERE id = ?')->execute([json_encode($ids), $userId]);
 }
 
@@ -89,85 +142,122 @@ function clearBotMessageIds(int $userId): void
 }
 
 /**
- * Custom emoji HTML tag for Telegram.
- * Inner text MUST be a real emoji character (Telegram requirement) — used as fallback on old clients.
+ * Custom premium emoji via Telegram HTML.
+ * IDs from FinanceEmoji + NewsEmoji packs provided by owner.
  *
- * IMPORTANT: Bot must be owned by a Telegram Premium account for custom emoji to render.
+ * REQUIREMENT: Bot must be owned by a Telegram Premium account,
+ * otherwise Telegram only shows the fallback emoji inside the tag.
  */
 function ce(string $key, string $fallbackEmoji = '⭐'): string
 {
+    // Defaults from HTML_FinanceEmoji + HTML_NewsEmoji
     static $defaults = [
-        'ce_welcome_1'  => '5458904472598095631',
-        'ce_welcome_2'  => '6001538474795078519',
-        'ce_welcome_3'  => '6269103435413459285',
-        'ce_welcome_4'  => '5386757680679377085',
-        'ce_welcome_5'  => '6059724471223194869',
-        'ce_welcome_6'  => '6222198028854367391',
-        'ce_join_1'     => '5332455502917949981',
-        'ce_join_2'     => '5303138782004924588',
-        'ce_join_ok'    => '5206607081334906820',
-        'ce_join_no'    => '5210952531676504517',
-        'ce_retry'      => '5382194935057372936',
-        'ce_menu_1'     => '5267500801240092311',
-        'ce_wallet_1'   => '5287231198098117669',
-        'ce_balance'    => '5197434882321567830',
-        'ce_ref_1'      => '5332724926216428039',
-        'ce_ref_2'      => '6269103435413459285',
-        'ce_ref_rocket' => '5195033767969839232',
-        'ce_ref_gift'   => '6001538474795078519',
-        'ce_payout_1'   => '5445355530111437729',
-        'ce_payout_ok'  => '5206607081334906820',
-        'ce_payout_no'  => '5210952531676504517',
-        'ce_card'       => '5445353829304387411',
-        'ce_network'    => '5224450179368767019',
-        'ce_earn_1'     => '6001538474795078519',
-        'ce_target'     => '5310278924616356636',
-        'ce_warn'       => '6059724471223194869',
-        'ce_ok'         => '5206607081334906820',
-        'ce_no'         => '5210952531676504517',
-        'ce_fire'       => '5267102644886853973',
-        'ce_chart'      => '5197503331215361533',
-        'ce_receipt'    => '5444856076954520455',
+        // Welcome / general
+        'ce_welcome_1'  => '5438496463044752972', // ⭐ News
+        'ce_welcome_2'  => '5287231198098117669', // 💰 Finance
+        'ce_welcome_3'  => '5271604874419647061', // 🔗 News
+        'ce_welcome_4'  => '5409048419211682843', // 💵 News
+        'ce_welcome_5'  => '5447644880824181073', // ⚠️ News
+        'ce_welcome_6'  => '5206607081334906820', // ✔️ News
+        // Join
+        'ce_join_1'     => '5332455502917949981', // 🏦 Finance
+        'ce_join_2'     => '5303138782004924588', // 💬 Finance
+        'ce_join_ok'    => '5206607081334906820', // ✔️
+        'ce_join_no'    => '5210952531676504517', // ❌
+        'ce_retry'      => '5375338737028841420', // 🔄 News
+        // Menu
+        'ce_menu_1'     => '5416041192905265756', // 🏠 News
+        // Wallet / money
+        'ce_wallet_1'   => '5287231198098117669', // 💰
+        'ce_balance'    => '5197434882321567830', // 💵 Finance
+        // Referrals
+        'ce_ref_1'      => '5332724926216428039', // 📇 Finance
+        'ce_ref_2'      => '5271604874419647061', // 🔗
+        'ce_ref_rocket' => '5195033767969839232', // 🚀 Finance
+        'ce_ref_gift'   => '5461151367559141950', // 🎉 News
+        // Payout
+        'ce_payout_1'   => '5445355530111437729', // 📤 Finance
+        'ce_payout_ok'  => '5206607081334906820', // ✔️
+        'ce_payout_no'  => '5210952531676504517', // ❌
+        'ce_card'       => '5445353829304387411', // 💳 Finance
+        'ce_network'    => '5224450179368767019', // 🌎 Finance
+        // Earn
+        'ce_earn_1'     => '5310278924616356636', // 🎯 Finance
+        'ce_target'     => '5310278924616356636', // 🎯
+        'ce_warn'       => '5447644880824181073', // ⚠️
+        'ce_ok'         => '5206607081334906820', // ✔️
+        'ce_no'         => '5210952531676504517', // ❌
+        'ce_fire'       => '5424972470023104089', // 🔥 News
+        'ce_chart'      => '5197503331215361533', // 📈 Finance
+        'ce_receipt'    => '5444856076954520455', // 🧾 Finance
+        'ce_star'       => '5267500801240092311', // ⭐ Finance
+        'ce_bell'       => '5458603043203327669', // 🔔 News
+        'ce_lock'       => '5296369303661067030', // 🔒 News
+        'ce_new'        => '5382357040008021292', // 🆕 News
+        'ce_diamond'    => '5427168083074628963', // 💎 News
+        'ce_crown'      => '5217822164362739968', // 👑 News
+        'ce_in'         => '5443127283898405358', // 📥 Finance
+        'ce_out'        => '5445355530111437729', // 📤 Finance
+        'ce_look'       => '5210956306952758910', // 👀 News
+        'ce_zap'        => '5456140674028019486', // ⚡️ News
+        'ce_pin'        => '5397782960512444700', // 📌 News
+        'ce_shield'     => '5251203410396458957', // 🛡 News
+        'ce_calendar'   => '5274055917766202507', // 🗓 Finance
+        'ce_briefcase'  => '5445221832074483553', // 💼 Finance
     ];
 
-    // Prefer real emoji as visual fallback (letters break some Telegram clients)
     static $emojiFallback = [
-        'ce_welcome_1'  => '👋',
-        'ce_welcome_2'  => '🎁',
+        'ce_welcome_1'  => '⭐',
+        'ce_welcome_2'  => '💰',
         'ce_welcome_3'  => '🔗',
-        'ce_welcome_4'  => '💰',
+        'ce_welcome_4'  => '💵',
         'ce_welcome_5'  => '⚠️',
         'ce_welcome_6'  => '✅',
-        'ce_join_1'     => '📢',
-        'ce_join_2'     => '📋',
+        'ce_join_1'     => '🏦',
+        'ce_join_2'     => '💬',
         'ce_join_ok'    => '✅',
         'ce_join_no'    => '❌',
         'ce_retry'      => '🔄',
         'ce_menu_1'     => '🏠',
-        'ce_wallet_1'   => '💼',
+        'ce_wallet_1'   => '💰',
         'ce_balance'    => '💵',
-        'ce_ref_1'      => '👥',
+        'ce_ref_1'      => '📇',
         'ce_ref_2'      => '🔗',
         'ce_ref_rocket' => '🚀',
-        'ce_ref_gift'   => '🎁',
-        'ce_payout_1'   => '⬆️',
+        'ce_ref_gift'   => '🎉',
+        'ce_payout_1'   => '📤',
         'ce_payout_ok'  => '✅',
         'ce_payout_no'  => '❌',
         'ce_card'       => '💳',
         'ce_network'    => '🌐',
-        'ce_earn_1'     => '🎁',
+        'ce_earn_1'     => '🎯',
         'ce_target'     => '🎯',
         'ce_warn'       => '⚠️',
         'ce_ok'         => '✅',
         'ce_no'         => '❌',
         'ce_fire'       => '🔥',
-        'ce_chart'      => '📊',
+        'ce_chart'      => '📈',
         'ce_receipt'    => '🧾',
+        'ce_star'       => '⭐',
+        'ce_bell'       => '🔔',
+        'ce_lock'       => '🔒',
+        'ce_new'        => '🆕',
+        'ce_diamond'    => '💎',
+        'ce_crown'      => '👑',
+        'ce_in'         => '📥',
+        'ce_out'        => '📤',
+        'ce_look'       => '👀',
+        'ce_zap'        => '⚡️',
+        'ce_pin'        => '📌',
+        'ce_shield'     => '🛡',
+        'ce_calendar'   => '🗓',
+        'ce_briefcase'  => '💼',
     ];
 
     $id = '';
     try {
-        $id = preg_replace('/\D+/', '', (string)getSetting($key, ''));
+        $raw = trim((string)getSetting($key, ''));
+        $id = preg_replace('/\D+/', '', $raw);
     } catch (Throwable $e) {
         $id = '';
     }
@@ -176,16 +266,11 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
     }
 
     $inner = $emojiFallback[$key] ?? $fallbackEmoji;
-    // If caller passed a letter, still prefer mapped emoji
-    if (isset($emojiFallback[$key]) && mb_strlen($fallbackEmoji) === 1 && preg_match('/[A-Za-z]/', $fallbackEmoji)) {
-        $inner = $emojiFallback[$key];
-    }
-
-    if ($id === '' || strlen($id) < 5) {
+    if ($id === '' || strlen($id) < 8) {
         return $inner;
     }
 
-    // Official HTML custom-emoji format
+    // Official Bot API HTML custom emoji
     return '<tg-emoji emoji-id="' . $id . '">' . $inner . '</tg-emoji>';
 }
 

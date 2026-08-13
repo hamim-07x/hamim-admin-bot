@@ -11,8 +11,8 @@ function showWelcomeAgree(TelegramBot $bot, int $chatId, array $from): void
     $text .= ce('ce_welcome_4') . " The More You Engage, The More You Earn.\n\n";
     $text .= ce('ce_welcome_5') . " By continuing, you must agree to our Terms & Conditions.\n\n";
     $text .= ce('ce_welcome_6') . ' Click <b>I Agree & Continue</b> below.';
-    $kb = TelegramBot::inlineKeyboard([[['text' => '✅ I Agree & Continue', 'callback_data' => 'agree_continue']]]);
-    botSend($bot, $chatId, $userId, $text, 'img_welcome', ['reply_markup' => $kb]);
+    $kb = TelegramBot::inlineKeyboard([[['text' => 'I Agree & Continue', 'callback_data' => 'agree_continue']]]);
+    botSend($bot, $chatId, $userId, $text, 'img_welcome', ['reply_markup' => $kb], false);
 }
 
 function showJoinScreen(TelegramBot $bot, int $chatId, int $userId, array $missing = []): void
@@ -28,12 +28,12 @@ function showJoinScreen(TelegramBot $bot, int $chatId, int $userId, array $missi
     foreach ($missing as $ch) {
         $link = trim((string)($ch['invite_link'] ?? ''));
         if ($link === '') $link = 'https://t.me/' . ltrim($ch['username'], '@');
-        $pair[] = ['text' => '📢 ' . ($ch['title'] ?: $ch['username']), 'url' => $link];
+        $pair[] = ['text' => ($ch['title'] ?: $ch['username']), 'url' => $link];
         if (count($pair) === 2) { $rows[] = $pair; $pair = []; }
     }
     if ($pair) $rows[] = $pair;
-    $rows[] = [['text' => '✅ Proceed', 'callback_data' => 'check_join']];
-    botSend($bot, $chatId, $userId, $text, 'img_join', ['reply_markup' => TelegramBot::inlineKeyboard($rows)]);
+    $rows[] = [['text' => 'Proceed', 'callback_data' => 'check_join']];
+    botSend($bot, $chatId, $userId, $text, 'img_join', ['reply_markup' => TelegramBot::inlineKeyboard($rows)], false);
 }
 
 function showJoinFailed(TelegramBot $bot, int $chatId, int $userId, array $missing = []): void
@@ -50,12 +50,12 @@ function showJoinFailed(TelegramBot $bot, int $chatId, int $userId, array $missi
     foreach ($missing as $ch) {
         $link = trim((string)($ch['invite_link'] ?? ''));
         if ($link === '') $link = 'https://t.me/' . ltrim($ch['username'], '@');
-        $pair[] = ['text' => '📢 ' . ($ch['title'] ?: $ch['username']), 'url' => $link];
+        $pair[] = ['text' => ($ch['title'] ?: $ch['username']), 'url' => $link];
         if (count($pair) === 2) { $rows[] = $pair; $pair = []; }
     }
     if ($pair) $rows[] = $pair;
-    $rows[] = [['text' => '🔄 Retry', 'callback_data' => 'retry_join']];
-    botSend($bot, $chatId, $userId, $text, 'img_join', ['reply_markup' => TelegramBot::inlineKeyboard($rows)]);
+    $rows[] = [['text' => 'Retry', 'callback_data' => 'retry_join']];
+    botSend($bot, $chatId, $userId, $text, 'img_join', ['reply_markup' => TelegramBot::inlineKeyboard($rows)], false);
 }
 
 function menuLabels(): array
@@ -71,14 +71,18 @@ function menuLabels(): array
 
 function backKeyboard(): array
 {
-    return TelegramBot::inlineKeyboard([[['text' => '⬅️ Back', 'callback_data' => 'go_menu']]]);
+    // Reply keyboard always includes main menu + Back text handled via go_menu callback alternative:
+    // Use reply keyboard only so main buttons never disappear.
+    return TelegramBot::mainMenuKeyboardFromLabels(menuLabels());
 }
 
 function showMainMenu(TelegramBot $bot, int $chatId, int $userId): void
 {
     $text  = ce('ce_menu_1') . " <b>Main Menu</b>\n\n";
-    $text .= ce('ce_welcome_6') . ' Choose an option below:';
-    botSend($bot, $chatId, $userId, $text, 'img_menu', ['reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels())]);
+    $text .= ce('ce_welcome_6') . ' Choose an option from the menu below:';
+    botSend($bot, $chatId, $userId, $text, 'img_menu', [
+        'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+    ], true);
 }
 
 function showWallet(TelegramBot $bot, int $chatId, int $userId): void
@@ -91,8 +95,11 @@ function showWallet(TelegramBot $bot, int $chatId, int $userId): void
     $text  = ce('ce_wallet_1') . " <b>{$c} Wallet</b>\n\n";
     $text .= "━━━━━━━━━━━━━━\n";
     $text .= ce('ce_balance') . " Balance: <b>{$s}{$bal}</b>\n";
-    $text .= "━━━━━━━━━━━━━━";
-    botSend($bot, $chatId, $userId, $text, 'img_wallet', ['reply_markup' => backKeyboard()]);
+    $text .= "━━━━━━━━━━━━━━\n\n";
+    $text .= ce('ce_menu_1') . ' Use menu buttons below anytime.';
+    botSend($bot, $chatId, $userId, $text, 'img_wallet', [
+        'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+    ], true);
 }
 
 function showReferrals(TelegramBot $bot, int $chatId, int $userId): void
@@ -113,7 +120,9 @@ function showReferrals(TelegramBot $bot, int $chatId, int $userId): void
     $text .= ce('ce_ref_gift') . " You receive <b>{$s}{$bonus} {$c}</b> per valid join.\n\n";
     $text .= ce('ce_ref_2') . " <b>Your link:</b>\n<code>" . htmlspecialchars($link) . "</code>\n\n";
     $text .= ce('ce_chart') . " Total referrals: <b>{$count}</b>";
-    botSend($bot, $chatId, $userId, $text, 'img_referrals', ['reply_markup' => backKeyboard()]);
+    botSend($bot, $chatId, $userId, $text, 'img_referrals', [
+        'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+    ], true);
 }
 
 function startWithdrawFlow(TelegramBot $bot, int $chatId, int $userId): void
@@ -129,7 +138,9 @@ function startWithdrawFlow(TelegramBot $bot, int $chatId, int $userId): void
         $text .= ce('ce_payout_no') . " Insufficient balance.\n";
         $text .= ce('ce_balance') . " Balance: <b>{$s}" . number_format($bal, 2) . "</b>\n";
         $text .= ce('ce_warn') . " Minimum: <b>{$s}" . number_format($min, 2) . "</b>";
-        botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => backKeyboard()]);
+        botSend($bot, $chatId, $userId, $text, 'img_payout', [
+            'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        ], true);
         return;
     }
     $text  = ce('ce_payout_1') . " <b>{$c} Payout</b>\n\n";
@@ -138,17 +149,26 @@ function startWithdrawFlow(TelegramBot $bot, int $chatId, int $userId): void
     $text .= ce('ce_network') . " Network: <b>BEP-20 (BSC)</b>\n\n";
     $text .= ce('ce_card') . ' Continue to enter wallet address?';
     $kb = TelegramBot::inlineKeyboard([
-        [['text' => '⬆️ Payout', 'callback_data' => 'wd_continue'], ['text' => '❌ Cancel', 'callback_data' => 'wd_cancel']],
-        [['text' => '⬅️ Back', 'callback_data' => 'go_menu']],
+        [
+            ['text' => 'Payout', 'callback_data' => 'wd_continue'],
+            ['text' => 'Cancel', 'callback_data' => 'wd_cancel'],
+        ],
     ]);
-    botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb]);
+    botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb], false);
+    // Re-assert main keyboard so it never disappears after inline message
+    $bot->sendMessage($chatId, ce('ce_menu_1') . ' Menu is always available below.', [
+        'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        'parse_mode' => 'HTML',
+    ]);
 }
 
 function handleWithdrawAddress(TelegramBot $bot, int $chatId, int $userId, string $address): void
 {
     $address = trim($address);
     if (!preg_match('/^0x[a-fA-F0-9]{40}$/', $address)) {
-        botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Invalid BSC address. Send 0x... or Cancel.');
+        botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Invalid BSC address. Send 0x... or Cancel.', 'img_payout', [
+            'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        ], true);
         return;
     }
     $stmt = getDB()->prepare('SELECT balance FROM users WHERE id = ?');
@@ -162,10 +182,14 @@ function handleWithdrawAddress(TelegramBot $bot, int $chatId, int $userId, strin
     $text .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n\n";
     $text .= ce('ce_network') . " Network: <b>BEP-20 (BSC)</b>";
     $kb = TelegramBot::inlineKeyboard([[
-        ['text' => '✅ Confirm (MAX)', 'callback_data' => 'wd_confirm'],
-        ['text' => '❌ Cancel', 'callback_data' => 'wd_cancel'],
+        ['text' => 'Confirm (MAX)', 'callback_data' => 'wd_confirm'],
+        ['text' => 'Cancel', 'callback_data' => 'wd_cancel'],
     ]]);
-    botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb]);
+    botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb], false);
+    $bot->sendMessage($chatId, ce('ce_menu_1') . ' Menu is always available below.', [
+        'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        'parse_mode' => 'HTML',
+    ]);
 }
 
 function processWithdraw(TelegramBot $bot, int $chatId, int $userId): void
@@ -174,7 +198,9 @@ function processWithdraw(TelegramBot $bot, int $chatId, int $userId): void
     clearBotState($userId);
     $address = $data['address'] ?? '';
     if (!$address || !preg_match('/^0x[a-fA-F0-9]{40}$/', $address)) {
-        botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Session expired.');
+        botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Session expired.', '', [
+            'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        ], true);
         showMainMenu($bot, $chatId, $userId);
         return;
     }
@@ -187,7 +213,9 @@ function processWithdraw(TelegramBot $bot, int $chatId, int $userId): void
         $min = (float)getSetting('min_withdraw', '1');
         if ($bal < $min) {
             $db->rollBack();
-            botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Insufficient balance.');
+            botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Insufficient balance.', '', [
+                'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+            ], true);
             showMainMenu($bot, $chatId, $userId);
             return;
         }
@@ -203,10 +231,14 @@ function processWithdraw(TelegramBot $bot, int $chatId, int $userId): void
         $text .= ce('ce_balance') . " Amount: <b>{$amount} {$c}</b>\n";
         $text .= ce('ce_card') . " Address: <code>" . htmlspecialchars($address) . "</code>\n";
         $text .= ce('ce_receipt') . ' Status: <b>Pending admin approval</b>';
-        botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => backKeyboard()]);
+        botSend($bot, $chatId, $userId, $text, 'img_payout', [
+            'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        ], true);
     } catch (Throwable $e) {
         if ($db->inTransaction()) $db->rollBack();
-        botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Error processing payout.');
+        botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Error processing payout.', '', [
+            'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+        ], true);
         showMainMenu($bot, $chatId, $userId);
     }
 }
@@ -216,5 +248,7 @@ function showEarnMore(TelegramBot $bot, int $chatId, int $userId): void
     $text  = ce('ce_earn_1') . " <b>EARN MORE</b>\n\n";
     $text .= ce('ce_target') . " Tasks coming soon.\n";
     $text .= ce('ce_fire') . ' Stay tuned!';
-    botSend($bot, $chatId, $userId, $text, 'img_earn', ['reply_markup' => backKeyboard()]);
+    botSend($bot, $chatId, $userId, $text, 'img_earn', [
+        'reply_markup' => TelegramBot::mainMenuKeyboardFromLabels(menuLabels()),
+    ], true);
 }
