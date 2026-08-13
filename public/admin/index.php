@@ -20,6 +20,13 @@ $db = getDB();
 $userCount = (int)$db->query('SELECT COUNT(*) FROM users')->fetchColumn();
 $wdPending = (int)$db->query("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")->fetchColumn();
 $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->fetchColumn();
+$editId = (int)($_GET['edit'] ?? 0);
+$editCh = null;
+if ($page === 'channels' && $editId > 0) {
+    $st = $db->prepare('SELECT * FROM channels WHERE id = ?');
+    $st->execute([$editId]);
+    $editCh = $st->fetch() ?: null;
+}
 ?><!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin Panel</title><link rel="stylesheet" href="/admin/admin.css"></head>
@@ -45,7 +52,7 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
 <?php elseif ($page === 'settings'): ?>
   <div class="page-title">Bot Settings</div>
   <div class="card">
-    <p class="hint">Only bot identity + welcome + currency. Payment options are under <b>Payment Settings</b>.</p>
+    <p class="hint">Bot identity + welcome + currency only. Payment channel is under <b>Payment Settings</b> (notify only — not join checklist).</p>
     <form method="post" action="/admin/save_settings.php">
       <input type="hidden" name="form" value="bot">
       <label>Bot API Token</label>
@@ -60,7 +67,6 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
       <input name="currency_symbol" value="<?= htmlspecialchars($settings['currency_symbol']??'$') ?>" placeholder="$">
       <label>Currency Emoji ID (premium / custom)</label>
       <input name="currency_emoji_id" value="<?= htmlspecialchars($settings['currency_emoji_id']??'') ?>" placeholder="5197434882321567830">
-      <p class="hint">Digits only — used next to balance in bot messages.</p>
       <button type="submit" class="btn-full">Save Bot Settings</button>
     </form>
   </div>
@@ -68,12 +74,12 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
 <?php elseif ($page === 'payment'): ?>
   <div class="page-title">Payment Settings</div>
   <div class="card">
-    <p class="hint">Notifications + auto payout (BSC). Bot must be <b>admin</b> in the payment channel to post alerts.</p>
+    <p class="hint"><b>Payment channel is NOT a join checklist channel.</b> It is only used to post payout notifications. Bot must be admin there.</p>
     <form method="post" action="/admin/save_settings.php">
       <input type="hidden" name="form" value="payment">
       <label>Payment / Notify Channel</label>
-      <input name="payment_channel" value="<?= htmlspecialchars($settings['payment_channel']??'') ?>" placeholder="@mychannel or channel id">
-      <p class="hint">After withdraw approve, a message is sent here (if set).</p>
+      <input name="payment_channel" value="<?= htmlspecialchars($settings['payment_channel']??'') ?>" placeholder="@mychannel">
+      <p class="hint">Only for approve/paid alerts — users are never forced to join this channel.</p>
 
       <label>Min Withdraw</label>
       <input name="min_withdraw" value="<?= htmlspecialchars($settings['min_withdraw']??'1') ?>">
@@ -86,76 +92,98 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
 
       <label>Auto-Pay (BSC)</label>
       <select name="withdraw_mode">
-        <option value="manual" <?= ($settings['withdraw_mode']??'manual')==='manual'?'selected':'' ?>>OFF — manual approve only</option>
-        <option value="auto" <?= ($settings['withdraw_mode']??'')==='auto'?'selected':'' ?>>ON — mark paid + notify (hot wallet key required)</option>
+        <option value="manual" <?= ($settings['withdraw_mode']??'manual')==='manual'?'selected':'' ?>>OFF — manual approve</option>
+        <option value="auto" <?= ($settings['withdraw_mode']??'')==='auto'?'selected':'' ?>>ON — mark paid + notify</option>
       </select>
-      <p class="hint">When ON, approving a withdrawal marks it paid and notifies user + channel. Keep private key only on server.</p>
 
       <label>Hot Wallet Private Key (server only)</label>
       <input name="hot_wallet_private_key" type="password" value="<?= htmlspecialchars($settings['hot_wallet_private_key']??'') ?>" placeholder="0x..." autocomplete="off">
-
       <label>USDT Contract (BEP-20)</label>
       <input name="usdt_contract" value="<?= htmlspecialchars($settings['usdt_contract']??'0x55d398326f99059fF775485246999027B3197955') ?>">
-
       <label>Network</label>
       <input name="network" value="<?= htmlspecialchars($settings['network']??'BEP20') ?>">
-
       <label>RPC URL (optional)</label>
-      <input name="rpc_url" value="<?= htmlspecialchars($settings['rpc_url']??'') ?>" placeholder="https://bsc-dataseed.binance.org/">
-
+      <input name="rpc_url" value="<?= htmlspecialchars($settings['rpc_url']??'') ?>">
       <label>Referral Bonus</label>
       <input name="referral_bonus" value="<?= htmlspecialchars($settings['referral_bonus']??'1.00') ?>">
+
+      <hr style="border:0;border-top:1px solid #333;margin:1.25rem 0">
+      <p class="hint">Channel notify message: inline button under the alert (opens your bot).</p>
+      <label>Notify button text</label>
+      <input name="notify_btn_text" value="<?= htmlspecialchars($settings['notify_btn_text']??'Start Bot') ?>" placeholder="Start Bot">
+      <label>Notify button premium emoji ID</label>
+      <input name="notify_btn_emoji_id" value="<?= htmlspecialchars($settings['notify_btn_emoji_id']??'') ?>" placeholder="5416041192905265756">
 
       <button type="submit" class="btn-full">Save Payment Settings</button>
     </form>
   </div>
 
 <?php elseif ($page === 'channels'): ?>
-  <div class="page-title">Channels</div>
-  <div class="card"><form method="post" action="/admin/save_channel.php">
-    <label>Title</label><input name="title" required>
-    <label>Username</label><input name="username" required placeholder="channelusername">
-    <label>Invite / Join Link (required)</label><input name="invite_link" required placeholder="https://t.me/...">
-    <button type="submit" class="btn-full">Add Channel</button>
-  </form></div>
-  <div class="card"><table class="table"><tr><th>Title</th><th>Username</th><th>Link</th><th></th></tr>
-  <?php foreach ($db->query('SELECT * FROM channels ORDER BY id DESC')->fetchAll() as $ch): ?>
-    <tr><td><?= htmlspecialchars($ch['title']) ?></td><td>@<?= htmlspecialchars($ch['username']) ?></td><td><?= htmlspecialchars($ch['invite_link']??'') ?></td>
-    <td><a href="/admin/delete_channel.php?id=<?= (int)$ch['id'] ?>">Delete</a></td></tr>
-  <?php endforeach; ?></table></div>
+  <div class="page-title">Channels (Join Checklist)</div>
+  <div class="card">
+    <p class="hint">Only channels listed here are required to join. Payment channel is separate (notify only).</p>
+    <form method="post" action="/admin/save_channel.php">
+      <?php if ($editCh): ?>
+        <input type="hidden" name="id" value="<?= (int)$editCh['id'] ?>">
+        <p class="hint">Editing channel #<?= (int)$editCh['id'] ?> — <a href="/admin/?page=channels">Cancel edit</a></p>
+      <?php endif; ?>
+      <label>Title</label>
+      <input name="title" required value="<?= htmlspecialchars($editCh['title'] ?? '') ?>">
+      <label>Username</label>
+      <input name="username" required placeholder="channelusername" value="<?= htmlspecialchars($editCh['username'] ?? '') ?>">
+      <label>Invite / Join Link (required)</label>
+      <input name="invite_link" required placeholder="https://t.me/..." value="<?= htmlspecialchars($editCh['invite_link'] ?? '') ?>">
+      <button type="submit" class="btn-full"><?= $editCh ? 'Update Channel' : 'Add Channel' ?></button>
+    </form>
+  </div>
+  <div class="card" style="overflow-x:auto">
+    <table class="table">
+      <tr><th>Title</th><th>Username</th><th>Link</th><th>Actions</th></tr>
+      <?php foreach ($db->query('SELECT * FROM channels ORDER BY id DESC')->fetchAll() as $ch): ?>
+      <tr>
+        <td><?= htmlspecialchars($ch['title']) ?></td>
+        <td>@<?= htmlspecialchars($ch['username']) ?></td>
+        <td><code class="addr"><?= htmlspecialchars($ch['invite_link']??'') ?></code></td>
+        <td class="inline-form">
+          <a class="btn-ok" style="padding:.45rem .7rem;border-radius:8px;display:inline-block" href="/admin/?page=channels&amp;edit=<?= (int)$ch['id'] ?>">Edit</a>
+          <a class="btn-bad" style="padding:.45rem .7rem;border-radius:8px;display:inline-block;color:#fff" href="/admin/delete_channel.php?id=<?= (int)$ch['id'] ?>" onclick="return confirm('Delete this channel?')">Delete</a>
+        </td>
+      </tr>
+      <?php endforeach; ?>
+    </table>
+  </div>
 
 <?php elseif ($page === 'menu_buttons'): ?>
   <div class="page-title">Menu Buttons + Premium Icons</div>
   <div class="card">
-    <p class="hint">Button text + premium emoji ID (icon_custom_emoji_id). Empty ID = default pack.</p>
     <form method="post" action="/admin/save_menu_buttons.php">
       <label>1) Wallet button text</label>
       <input name="menu_btn_wallet" value="<?= htmlspecialchars($settings['menu_btn_wallet']??'USDT Wallet') ?>">
       <label>Wallet premium emoji ID</label>
-      <input name="ce_btn_wallet" value="<?= htmlspecialchars($settings['ce_btn_wallet']??'') ?>" placeholder="5287231198098117669">
+      <input name="ce_btn_wallet" value="<?= htmlspecialchars($settings['ce_btn_wallet']??'') ?>">
       <label>2) Referrals button text</label>
       <input name="menu_btn_referrals" value="<?= htmlspecialchars($settings['menu_btn_referrals']??'Referrals') ?>">
       <label>Referrals premium emoji ID</label>
-      <input name="ce_btn_referrals" value="<?= htmlspecialchars($settings['ce_btn_referrals']??'') ?>" placeholder="5332724926216428039">
+      <input name="ce_btn_referrals" value="<?= htmlspecialchars($settings['ce_btn_referrals']??'') ?>">
       <label>3) Payout button text</label>
       <input name="menu_btn_payout" value="<?= htmlspecialchars($settings['menu_btn_payout']??'USDT Payout') ?>">
       <label>Payout premium emoji ID</label>
-      <input name="ce_btn_payout" value="<?= htmlspecialchars($settings['ce_btn_payout']??'') ?>" placeholder="5445355530111437729">
+      <input name="ce_btn_payout" value="<?= htmlspecialchars($settings['ce_btn_payout']??'') ?>">
       <label>4) Earn button text</label>
       <input name="menu_btn_earn" value="<?= htmlspecialchars($settings['menu_btn_earn']??'EARN MORE') ?>">
       <label>Earn premium emoji ID</label>
-      <input name="ce_btn_earn" value="<?= htmlspecialchars($settings['ce_btn_earn']??'') ?>" placeholder="5310278924616356636">
+      <input name="ce_btn_earn" value="<?= htmlspecialchars($settings['ce_btn_earn']??'') ?>">
       <hr style="border:0;border-top:1px solid #333;margin:1.2rem 0">
       <label>Back button emoji ID</label>
-      <input name="ce_btn_back" value="<?= htmlspecialchars($settings['ce_btn_back']??'') ?>" placeholder="5416041192905265756">
+      <input name="ce_btn_back" value="<?= htmlspecialchars($settings['ce_btn_back']??'') ?>">
       <label>Cancel button emoji ID</label>
-      <input name="ce_btn_cancel" value="<?= htmlspecialchars($settings['ce_btn_cancel']??'') ?>" placeholder="5210952531676504517">
+      <input name="ce_btn_cancel" value="<?= htmlspecialchars($settings['ce_btn_cancel']??'') ?>">
       <label>OK / Agree / Confirm emoji ID</label>
-      <input name="ce_btn_agree" value="<?= htmlspecialchars($settings['ce_btn_agree']??'') ?>" placeholder="5206607081334906820">
+      <input name="ce_btn_agree" value="<?= htmlspecialchars($settings['ce_btn_agree']??'') ?>">
       <label>Retry button emoji ID</label>
-      <input name="ce_btn_retry" value="<?= htmlspecialchars($settings['ce_btn_retry']??'') ?>" placeholder="5375338737028841420">
+      <input name="ce_btn_retry" value="<?= htmlspecialchars($settings['ce_btn_retry']??'') ?>">
       <label>Channel join button emoji ID</label>
-      <input name="ce_btn_channel" value="<?= htmlspecialchars($settings['ce_btn_channel']??'') ?>" placeholder="5332455502917949981">
+      <input name="ce_btn_channel" value="<?= htmlspecialchars($settings['ce_btn_channel']??'') ?>">
       <button type="submit" class="btn-full">Save Menu + Premium Icons</button>
     </form>
   </div>
@@ -163,9 +191,22 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
 <?php elseif ($page === 'messages'): ?>
   <div class="page-title">Message Images</div>
   <div class="card"><form method="post" action="/admin/save_message_images.php">
-    <?php foreach (['img_welcome'=>'Welcome','img_join'=>'Join','img_menu'=>'Menu','img_wallet'=>'Wallet','img_referrals'=>'Referrals','img_payout'=>'Payout','img_earn'=>'Earn'] as $k=>$lab): ?>
-      <label><?= $lab ?> URL</label><input name="<?= $k ?>" value="<?= htmlspecialchars($settings[$k]??'') ?>">
-      <label><input type="checkbox" name="<?= $k ?>_on" value="1" <?= ($settings[$k.'_on']??'0')==='1'?'checked':'' ?>> Enable image for <?= $lab ?></label>
+    <?php
+    $imgSlots = [
+      'img_welcome' => 'Welcome',
+      'img_join' => 'Join',
+      'img_menu' => 'Menu',
+      'img_wallet' => 'Wallet',
+      'img_referrals' => 'Referrals',
+      'img_payout' => 'Payout',
+      'img_earn' => 'Earn',
+      'img_payout_success' => 'Payout Success (user + channel notify)',
+    ];
+    foreach ($imgSlots as $k => $lab):
+    ?>
+      <label><?= htmlspecialchars($lab) ?> URL</label>
+      <input name="<?= $k ?>" value="<?= htmlspecialchars($settings[$k]??'') ?>" placeholder="https://...">
+      <label><input type="checkbox" name="<?= $k ?>_on" value="1" <?= ($settings[$k.'_on']??'0')==='1'?'checked':'' ?>> Enable image for <?= htmlspecialchars($lab) ?></label>
     <?php endforeach; ?>
     <button type="submit" class="btn-full">Save Images</button>
   </form></div>
@@ -174,13 +215,7 @@ $chCount = (int)$db->query('SELECT COUNT(*) FROM channels WHERE is_active=1')->f
   <div class="page-title">Users</div>
   <div class="card" style="overflow-x:auto">
     <table class="table users-table">
-      <tr>
-        <th>User</th>
-        <th>Balance</th>
-        <th>Status</th>
-        <th>Edit balance</th>
-        <th>Actions</th>
-      </tr>
+      <tr><th>User</th><th>Balance</th><th>Status</th><th>Edit balance</th><th>Actions</th></tr>
       <?php foreach ($db->query('SELECT id, username, first_name, last_name, balance, is_blocked, created_at FROM users ORDER BY created_at DESC LIMIT 200')->fetchAll() as $u):
         $uname = trim(($u['first_name'] ?? '') . ' ' . ($u['last_name'] ?? ''));
         if ($uname === '') $uname = 'User';
