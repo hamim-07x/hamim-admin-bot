@@ -1,8 +1,7 @@
 <?php
 /**
- * All UI via INLINE buttons only.
- * Premium emoji on buttons via icon_custom_emoji_id (Telegram Bot API).
- * Text labels editable from Admin → Menu Buttons + emoji IDs.
+ * Inline UI only.
+ * Back = previous step | Cancel = main menu (home)
  */
 
 function menuLabels(): array
@@ -16,7 +15,6 @@ function menuLabels(): array
     ];
 }
 
-/** Digits-only custom emoji id from settings or default pack */
 function btnEmojiId(string $settingKey, string $defaultId): string
 {
     try {
@@ -30,7 +28,6 @@ function btnEmojiId(string $settingKey, string $defaultId): string
     return $id;
 }
 
-/** Strip leading unicode emoji from label (icon is separate) */
 function cleanBtnLabel(string $label): string
 {
     $label = trim($label);
@@ -39,7 +36,6 @@ function cleanBtnLabel(string $label): string
     return $label !== '' ? $label : 'Button';
 }
 
-/** Inline button with optional premium icon */
 function inlineBtn(string $text, string $callbackData, string $iconEmojiId = ''): array
 {
     $btn = [
@@ -67,33 +63,27 @@ function inlineUrlBtn(string $text, string $url, string $iconEmojiId = ''): arra
 function mainMenuInline(): array
 {
     $l = menuLabels();
-    $w = cleanBtnLabel($l['wallet']);
-    $r = cleanBtnLabel($l['referrals']);
-    $p = cleanBtnLabel($l['payout']);
-    $e = cleanBtnLabel($l['earn']);
-
-    // Defaults from FinanceEmoji / NewsEmoji packs
-    $idW = btnEmojiId('ce_btn_wallet', '5287231198098117669');    // 💰
-    $idR = btnEmojiId('ce_btn_referrals', '5332724926216428039'); // 📇
-    $idP = btnEmojiId('ce_btn_payout', '5445355530111437729');    // 📤
-    $idE = btnEmojiId('ce_btn_earn', '5310278924616356636');      // 🎯
+    $idW = btnEmojiId('ce_btn_wallet', '5287231198098117669');
+    $idR = btnEmojiId('ce_btn_referrals', '5332724926216428039');
+    $idP = btnEmojiId('ce_btn_payout', '5445355530111437729');
+    $idE = btnEmojiId('ce_btn_earn', '5310278924616356636');
 
     return TelegramBot::inlineKeyboard([
         [
-            inlineBtn($w, 'nav_wallet', $idW),
-            inlineBtn($r, 'nav_referrals', $idR),
+            inlineBtn(cleanBtnLabel($l['wallet']), 'nav_wallet', $idW),
+            inlineBtn(cleanBtnLabel($l['referrals']), 'nav_referrals', $idR),
         ],
         [
-            inlineBtn($p, 'nav_payout', $idP),
-            inlineBtn($e, 'nav_earn', $idE),
+            inlineBtn(cleanBtnLabel($l['payout']), 'nav_payout', $idP),
+            inlineBtn(cleanBtnLabel($l['earn']), 'nav_earn', $idE),
         ],
     ]);
 }
 
+/** Top-level screens: Back → home */
 function backInline(): array
 {
-    // ⬅️ / back style id from News pack if available — use retry/home style
-    $idBack = btnEmojiId('ce_btn_back', '5416041192905265756'); // 🏠 home as back-to-menu
+    $idBack = btnEmojiId('ce_btn_back', '5416041192905265756');
     return TelegramBot::inlineKeyboard([
         [inlineBtn('Back', 'go_menu', $idBack)],
     ]);
@@ -114,7 +104,7 @@ function showWelcomeAgree(TelegramBot $bot, int $chatId, array $from): void
     $text .= ce('ce_welcome_5') . " By continuing, you must agree to our Terms & Conditions.\n\n";
     $text .= ce('ce_welcome_6') . ' Click <b>I Agree & Continue</b> below.';
 
-    $idOk = btnEmojiId('ce_btn_agree', '5206607081334906820'); // ✔️
+    $idOk = btnEmojiId('ce_btn_agree', '5206607081334906820');
     $kb = TelegramBot::inlineKeyboard([
         [inlineBtn('I Agree & Continue', 'agree_continue', $idOk)],
     ]);
@@ -137,7 +127,7 @@ function showJoinScreen(TelegramBot $bot, int $chatId, int $userId, array $missi
     $text .= ce('ce_warn') . " Only channels you have not joined are shown.\n";
     $text .= ce('ce_no') . " Without joining, the bot will not work.\n";
 
-    $idCh = btnEmojiId('ce_btn_channel', '5332455502917949981'); // 🏦
+    $idCh = btnEmojiId('ce_btn_channel', '5332455502917949981');
     $idGo = btnEmojiId('ce_btn_agree', '5206607081334906820');
     $rows = [];
     $pair = [];
@@ -173,7 +163,7 @@ function showJoinFailed(TelegramBot $bot, int $chatId, int $userId, array $missi
     $text .= "\n" . ce('ce_retry') . " Join them, then tap <b>Retry</b>.";
 
     $idCh = btnEmojiId('ce_btn_channel', '5332455502917949981');
-    $idRetry = btnEmojiId('ce_btn_retry', '5375338737028841420'); // 🔄
+    $idRetry = btnEmojiId('ce_btn_retry', '5375338737028841420');
     $rows = [];
     $pair = [];
     foreach ($missing as $ch) {
@@ -196,6 +186,7 @@ function showJoinFailed(TelegramBot $bot, int $chatId, int $userId, array $missi
 
 function showMainMenu(TelegramBot $bot, int $chatId, int $userId): void
 {
+    clearBotState($userId);
     $text  = ce('ce_menu_1') . " <b>Main Menu</b>\n\n";
     $text .= ce('ce_welcome_6') . ' Choose an option below:';
     botSend($bot, $chatId, $userId, $text, 'img_menu', ['reply_markup' => mainMenuInline()]);
@@ -238,6 +229,9 @@ function showReferrals(TelegramBot $bot, int $chatId, int $userId): void
 
 function startWithdrawFlow(TelegramBot $bot, int $chatId, int $userId): void
 {
+    clearBotState($userId);
+    setBotState($userId, 'withdraw_start');
+
     $stmt = getDB()->prepare('SELECT balance FROM users WHERE id = ?');
     $stmt->execute([$userId]);
     $bal = (float)($stmt->fetch()['balance'] ?? 0);
@@ -246,7 +240,7 @@ function startWithdrawFlow(TelegramBot $bot, int $chatId, int $userId): void
     $s = getSetting('currency_symbol', '$');
 
     $idPayout = btnEmojiId('ce_btn_payout', '5445355530111437729');
-    $idCancel = btnEmojiId('ce_btn_cancel', '5210952531676504517'); // ❌
+    $idCancel = btnEmojiId('ce_btn_cancel', '5210952531676504517');
     $idBack = btnEmojiId('ce_btn_back', '5416041192905265756');
 
     if ($bal < $min) {
@@ -257,11 +251,14 @@ function startWithdrawFlow(TelegramBot $bot, int $chatId, int $userId): void
         botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => backInline()]);
         return;
     }
+
     $text  = ce('ce_btn_payout') . " <b>{$c} Payout</b>\n\n";
     $text .= ce('ce_balance') . " Balance: <b>{$s}" . number_format($bal, 2) . "</b>\n";
     $text .= ce('ce_warn') . " Minimum: <b>{$s}" . number_format($min, 2) . "</b>\n";
     $text .= ce('ce_network') . " Network: <b>BEP-20 (BSC)</b>\n\n";
     $text .= ce('ce_card') . ' Continue to enter wallet address?';
+
+    // Back → home | Cancel → home (first step of payout)
     $kb = TelegramBot::inlineKeyboard([
         [
             inlineBtn('Payout', 'wd_continue', $idPayout),
@@ -279,12 +276,15 @@ function askWithdrawAddress(TelegramBot $bot, int $chatId, int $userId): void
     $text  = ce('ce_btn_payout') . " <b>{$c} Payout</b>\n\n";
     $text .= ce('ce_card') . " Send your <b>BEP-20 (BSC)</b> wallet address:\n\n";
     $text .= ce('ce_warn') . " Example: <code>0x...</code>";
+
     $idCancel = btnEmojiId('ce_btn_cancel', '5210952531676504517');
     $idBack = btnEmojiId('ce_btn_back', '5416041192905265756');
+
+    // Back → one step (payout start) | Cancel → home
     $kb = TelegramBot::inlineKeyboard([
         [
             inlineBtn('Cancel', 'wd_cancel', $idCancel),
-            inlineBtn('Back', 'go_menu', $idBack),
+            inlineBtn('Back', 'wd_back_start', $idBack),
         ],
     ]);
     botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb]);
@@ -302,28 +302,32 @@ function handleWithdrawAddress(TelegramBot $bot, int $chatId, int $userId, strin
         $kb = TelegramBot::inlineKeyboard([
             [
                 inlineBtn('Cancel', 'wd_cancel', $idCancel),
-                inlineBtn('Back', 'go_menu', $idBack),
+                inlineBtn('Back', 'wd_back_start', $idBack),
             ],
         ]);
         botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb]);
         return;
     }
+
     $stmt = getDB()->prepare('SELECT balance FROM users WHERE id = ?');
     $stmt->execute([$userId]);
     $bal = (float)($stmt->fetch()['balance'] ?? 0);
     $c = getSetting('currency_name', 'USDT');
     $s = getSetting('currency_symbol', '$');
     setBotState($userId, 'withdraw_confirm', ['address' => $address, 'amount' => $bal]);
+
     $text  = ce('ce_btn_payout') . " <b>Confirm Payout</b>\n\n";
     $text .= ce('ce_balance') . " Amount: <b>{$s}" . number_format($bal, 2) . " {$c}</b> (MAX)\n";
     $text .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n\n";
     $text .= ce('ce_network') . " Network: <b>BEP-20 (BSC)</b>";
+
+    // Back → address step | Cancel → home
     $kb = TelegramBot::inlineKeyboard([
         [
             inlineBtn('Confirm (MAX)', 'wd_confirm', $idOk),
             inlineBtn('Cancel', 'wd_cancel', $idCancel),
         ],
-        [inlineBtn('Back', 'go_menu', $idBack)],
+        [inlineBtn('Back', 'wd_back_address', $idBack)],
     ]);
     botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => $kb]);
 }
@@ -335,7 +339,6 @@ function processWithdraw(TelegramBot $bot, int $chatId, int $userId): void
     $address = $data['address'] ?? '';
     if (!$address || !preg_match('/^0x[a-fA-F0-9]{40}$/', $address)) {
         botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' Session expired.', '', ['reply_markup' => backInline()]);
-        showMainMenu($bot, $chatId, $userId);
         return;
     }
     $db = getDB();

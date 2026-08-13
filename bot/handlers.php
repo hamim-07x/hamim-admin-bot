@@ -18,11 +18,10 @@ function handleUpdate(array $update): void
     }
 }
 
-/** One-shot: hide any leftover reply keyboard from older bot versions */
 function stripReplyKeyboard(TelegramBot $bot, int $chatId): void
 {
     try {
-        $bot->sendMessage($chatId, 'ᅠ', [ // invisible-ish spacer
+        $bot->sendMessage($chatId, 'ᅠ', [
             'reply_markup' => TelegramBot::removeKeyboard(),
             'disable_notification' => true,
         ]);
@@ -100,13 +99,16 @@ function handleMessage(TelegramBot $bot, array $message): void
             processWithdraw($bot, $chatId, $userId);
             return;
         }
+        $idCancel = btnEmojiId('ce_btn_cancel', '5210952531676504517');
+        $idBack = btnEmojiId('ce_btn_back', '5416041192905265756');
+        $idOk = btnEmojiId('ce_btn_agree', '5206607081334906820');
         botSend($bot, $chatId, $userId, 'Please tap Confirm (MAX) or Cancel.', '', [
             'reply_markup' => TelegramBot::inlineKeyboard([
                 [
-                    ['text' => '✅ Confirm (MAX)', 'callback_data' => 'wd_confirm'],
-                    ['text' => '❌ Cancel', 'callback_data' => 'wd_cancel'],
+                    inlineBtn('Confirm (MAX)', 'wd_confirm', $idOk),
+                    inlineBtn('Cancel', 'wd_cancel', $idCancel),
                 ],
-                [['text' => '⬅️ Back', 'callback_data' => 'go_menu']],
+                [inlineBtn('Back', 'wd_back_address', $idBack)],
             ]),
         ]);
         return;
@@ -148,10 +150,30 @@ function handleCallback(TelegramBot $bot, array $cb): void
         return;
     }
 
-    if ($data === 'go_menu' || $data === 'nav_menu') {
-        $bot->answerCallback($cbId);
+    // Home
+    if ($data === 'go_menu' || $data === 'nav_menu' || $data === 'wd_cancel') {
+        $bot->answerCallback($cbId, $data === 'wd_cancel' ? 'Cancelled' : '');
         clearBotState($userId);
         showMainMenu($bot, $chatId, $userId);
+        return;
+    }
+
+    // One-step back in withdraw flow
+    if ($data === 'wd_back_start') {
+        $bot->answerCallback($cbId);
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
+            return;
+        }
+        startWithdrawFlow($bot, $chatId, $userId);
+        return;
+    }
+    if ($data === 'wd_back_address') {
+        $bot->answerCallback($cbId);
+        if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
+            return;
+        }
+        // keep address state cleared; re-ask address
+        askWithdrawAddress($bot, $chatId, $userId);
         return;
     }
 
@@ -185,13 +207,6 @@ function handleCallback(TelegramBot $bot, array $cb): void
             return;
         }
         showEarnMore($bot, $chatId, $userId);
-        return;
-    }
-
-    if ($data === 'wd_cancel') {
-        $bot->answerCallback($cbId, 'Cancelled');
-        clearBotState($userId);
-        showMainMenu($bot, $chatId, $userId);
         return;
     }
 

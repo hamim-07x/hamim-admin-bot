@@ -66,7 +66,6 @@ function normalizeChannelChat(string $channel): string
     return '@' . ltrim($channel, '@');
 }
 
-/** Public t.me link for channel (for user button) */
 function channelPublicLink(string $channel): string
 {
     $channel = trim($channel);
@@ -76,12 +75,10 @@ function channelPublicLink(string $channel): string
     if (preg_match('#^https?://#i', $channel)) {
         return $channel;
     }
-    // numeric / -100 ids cannot be opened as t.me/id reliably — need username
     if (preg_match('/^-?\d+$/', $channel)) {
         return '';
     }
-    $user = ltrim($channel, '@');
-    return 'https://t.me/' . $user;
+    return 'https://t.me/' . ltrim($channel, '@');
 }
 
 function notifySend(TelegramBot $bot, string|int $chatId, string $html, string $photoUrl = '', array $extra = []): bool
@@ -99,6 +96,7 @@ function notifySend(TelegramBot $bot, string|int $chatId, string $html, string $
         return true;
     }
 
+    // Retry plain (if custom emoji blocked)
     $plain = preg_replace('/<tg-emoji\s+emoji-id="\d+">(.*?)<\/tg-emoji>/su', '$1', $html) ?? $html;
     if ($photoUrl !== '' && preg_match('#^https?://#i', $photoUrl)) {
         $res = $bot->sendPhoto($chatId, $photoUrl, $plain, $extra);
@@ -124,7 +122,6 @@ if ($action === 'reject') {
     exit;
 }
 
-// APPROVE
 $mode = getSetting('withdraw_mode', 'manual');
 $newStatus = ($mode === 'auto') ? 'paid' : 'approved';
 $db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW() WHERE id=?')->execute([$newStatus, $id]);
@@ -152,16 +149,16 @@ if ($payChannelRaw === '') {
 $chat = normalizeChannelChat($payChannelRaw);
 $channelLink = channelPublicLink($payChannelRaw);
 
-// ========== USER private chat ==========
-// Success text + optional image + button to open payment channel
-if (getSetting('user_payout_alert', '1') === '1') {
-    $msg  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
-    $msg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
-    $msg .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-    $msg .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
-    $msg .= ce('ce_receipt') . ' Status: <b>' . strtoupper($newStatus) . '</b>';
+// Same body style for user + channel (personal-chat style)
+$coreMsg  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
+$coreMsg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
+$coreMsg .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
+$coreMsg .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
+$coreMsg .= ce('ce_receipt') . ' Status: <b>' . strtoupper($newStatus) . '</b>';
 
-    $rows = [];
+// USER DM
+if (getSetting('user_payout_alert', '1') === '1') {
+    $userExtra = [];
     if ($channelLink !== '') {
         $viewText = trim((string)getSetting('user_channel_btn_text', 'View Payment Channel'));
         if ($viewText === '') {
@@ -172,27 +169,24 @@ if (getSetting('user_payout_alert', '1') === '1') {
         if ($viewIcon !== '' && strlen($viewIcon) >= 8) {
             $btn['icon_custom_emoji_id'] = $viewIcon;
         }
-        $rows[] = [$btn];
+        $userExtra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
     }
-    $extra = $rows ? ['reply_markup' => ['inline_keyboard' => $rows]] : [];
-
-    $userOk = notifySend($bot, $userId, $msg, $successPhoto, $extra);
+    $userOk = notifySend($bot, $userId, $coreMsg, $successPhoto, $userExtra);
     if (!$userOk) {
         $notes[] = 'user DM failed';
     }
 }
 
-// ========== PAYMENT CHANNEL ==========
-// Channel message (editable style) + Start Bot button
+// CHANNEL — same style as personal chat + user line + Start Bot
 if ($chat !== '') {
-    // Try premium custom emoji first; notifySend falls back if Telegram rejects
-    $chMsg  = ce('ce_payout_ok') . " <b>Payout " . strtoupper($newStatus) . "</b>\n\n";
+    $chMsg  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
     $chMsg .= ce('ce_ref_1') . " User: <b>" . htmlspecialchars($displayName) . "</b> (" . htmlspecialchars($handle) . ")\n";
-    $chMsg .= "ID: <code>{$userId}</code>\n";
+    $chMsg .= "ID: <code>{$userId}</code>\n\n";
     $chMsg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
     $chMsg .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
     $chMsg .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
-    $chMsg .= ce('ce_receipt') . " Withdrawal: <b>#{$id}</b>";
+    $chMsg .= ce('ce_receipt') . ' Status: <b>' . strtoupper($newStatus) . '</b>';
+    $chMsg .= "\n" . ce('ce_receipt') . " Withdrawal: <b>#{$id}</b>";
 
     $botUser = ltrim((string)getSetting('bot_username', ''), '@');
     $btnText = trim((string)getSetting('notify_btn_text', 'Start Bot'));
@@ -214,7 +208,7 @@ if ($chat !== '') {
 
     $channelOk = notifySend($bot, $chat, $chMsg, $successPhoto, $extra);
     if (!$channelOk) {
-        $notes[] = 'channel notify failed (bot must be admin; use @username)';
+        $notes[] = 'channel notify failed';
     }
 }
 
