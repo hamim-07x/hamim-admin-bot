@@ -61,6 +61,7 @@ function handleMessage(TelegramBot $bot, array $message): void
             return;
         }
         markUserJoined($userId, true);
+        tryGrantReferralBonus($bot, $userId);
         showMainMenu($bot, $chatId, $userId);
         return;
     }
@@ -78,6 +79,7 @@ function handleMessage(TelegramBot $bot, array $message): void
         return;
     }
     markUserJoined($userId, true);
+    tryGrantReferralBonus($bot, $userId);
 
     $state = getBotState($userId);
     if ($state === 'withdraw_address') {
@@ -141,6 +143,7 @@ function handleCallback(TelegramBot $bot, array $cb): void
         $missing = getMissingChannels($bot, $userId);
         if (!$missing) {
             markUserJoined($userId, true);
+            tryGrantReferralBonus($bot, $userId);
             $bot->answerCallback($cbId, 'All channels joined!');
             showMainMenu($bot, $chatId, $userId);
         } else {
@@ -150,7 +153,6 @@ function handleCallback(TelegramBot $bot, array $cb): void
         return;
     }
 
-    // Home
     if ($data === 'go_menu' || $data === 'nav_menu' || $data === 'wd_cancel') {
         $bot->answerCallback($cbId, $data === 'wd_cancel' ? 'Cancelled' : '');
         clearBotState($userId);
@@ -158,7 +160,6 @@ function handleCallback(TelegramBot $bot, array $cb): void
         return;
     }
 
-    // One-step back in withdraw flow
     if ($data === 'wd_back_start') {
         $bot->answerCallback($cbId);
         if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
@@ -172,7 +173,6 @@ function handleCallback(TelegramBot $bot, array $cb): void
         if (!gateOk($bot, $chatId, $userId, $cb['from'])) {
             return;
         }
-        // keep address state cleared; re-ask address
         askWithdrawAddress($bot, $chatId, $userId);
         return;
     }
@@ -243,5 +243,6 @@ function gateOk(TelegramBot $bot, int $chatId, int $userId, array $from): bool
         showJoinFailed($bot, $chatId, $userId, $missing);
         return false;
     }
+    tryGrantReferralBonus($bot, $userId);
     return true;
 }
