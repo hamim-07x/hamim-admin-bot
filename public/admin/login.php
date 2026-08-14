@@ -23,7 +23,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ok = true;
         }
 
-        // Env override (optional): ADMIN_USER + ADMIN_PASS
         $envUser = getenv('ADMIN_USER') ?: 'admin';
         $envPass = getenv('ADMIN_PASS') ?: '';
         if (!$ok && $envPass !== '' && hash_equals($envUser, $user) && hash_equals($envPass, $pass)) {
@@ -36,7 +35,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ok = true;
         }
 
-        // Emergency: if hash broken but password is default admin123, repair + login
         if (!$ok && $user === 'admin' && $pass === 'admin123') {
             $hash = password_hash('admin123', PASSWORD_DEFAULT);
             if ($row) {
@@ -69,19 +67,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 ?><!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Admin Login</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Admin Login · HAMIM</title>
 <link rel="stylesheet" href="/admin/admin.css">
-</head><body class="login-body">
+</head>
+<body class="login-body">
 <div class="login-card">
-  <h1>Admin Login</h1>
+  <h1>HAMIM Admin</h1>
+  <p class="sub">Premium control panel — sign in to continue</p>
   <?php if ($error): ?><div class="flash error"><?= htmlspecialchars($error) ?></div><?php endif; ?>
   <form method="post" action="/admin/login.php">
     <label>Username</label>
     <input name="username" required autocomplete="username" placeholder="admin" value="admin">
     <label>Password</label>
-    <input type="password" name="password" required autocomplete="current-password" placeholder="admin123">
+    <input type="password" name="password" required autocomplete="current-password" placeholder="••••••••">
     <button type="submit" class="btn-full">Login</button>
   </form>
-  <p style="margin-top:1rem;font-size:12px;color:#71717a;text-align:center">Default: <b>admin</b> / <b>admin123</b></p>
-</div></body></html>
+  <p class="login-foot">Default: <b>admin</b> / <b>admin123</b></p>
+</div>
+</body>
+</html>
