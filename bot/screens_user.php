@@ -71,6 +71,96 @@ function markUserJoined(int $userId, bool $joined = true): void
     getDB()->prepare('UPDATE users SET is_joined = ? WHERE id = ?')->execute([$joined ? 1 : 0, $userId]);
 }
 
+function tryGrantReferralBonus(TelegramBot $bot, int $newUserId): void
+{
+    try {
+        $db = getDB();
+        $stmt = $db->prepare('SELECT referred_by, username, first_name, last_name FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([$newUserId]);
+        $u = $stmt->fetch();
+        if (!$u || empty($u['referred_by'])) {
+            return;
+        }
+        $referrerId = (int)$u['referred_by'];
+        if ($referrerId <= 0 || $referrerId === $newUserId) {
+            return;
+        }
+
+        $noteTag = 'ref_user:' . $newUserId;
+        $dup = $db->prepare("SELECT id FROM transactions WHERE type = 'referral' AND note = ? LIMIT 1");
+        $dup->execute([$noteTag]);
+        if ($dup->fetch()) {
+            return;
+        }
+
+        $bonus = (float)getSetting('referral_bonus', '1.00');
+        if ($bonus <= 0) {
+            return;
+        }
+
+        $db->beginTransaction();
+        $dup2 = $db->prepare("SELECT id FROM transactions WHERE type = 'referral' AND note = ? LIMIT 1");
+        $dup2->execute([$noteTag]);
+        if ($dup2->fetch()) {
+            $db->rollBack();
+            return;
+        }
+
+        $db->prepare('UPDATE users SET balance = balance + ? WHERE id = ?')->execute([$bonus, $referrerId]);
+        $db->prepare('INSERT INTO transactions (user_id, type, amount, status, note) VALUES (?,?,?,?,?)')
+            ->execute([$referrerId, 'referral', $bonus, 'completed', $noteTag]);
+        $db->commit();
+
+        $c = getSetting('currency_name', 'USDT');
+        $s = getSetting('currency_symbol', '$');
+        $display = trim((string)($u['first_name'] ?? '') . ' ' . (string)($u['last_name'] ?? ''));
+        if ($display === '') {
+            $display = 'User';
+        }
+        $handle = !empty($u['username']) ? '@' . $u['username'] : '—';
+
+        $text  = ce('ce_ref_gift') . " <b>Referral Bonus Added!</b>\n\n";
+        $text .= ce('ce_ref_rocket') . " A friend joined via your link.\n";
+        $text .= ce('ce_ref_1') . " User: <b>" . htmlspecialchars($display) . "</b> (" . htmlspecialchars($handle) . ")\n";
+        $text .= "ID: <code>{$newUserId}</code>\n\n";
+        $text .= ce('ce_balance') . " Bonus: <b>{$s}" . number_format($bonus, 2) . " {$c}</b>\n";
+        $text .= ce('ce_ok') . " Credited to your wallet.";
+
+        $photo = '';
+        if (getSetting('img_referral_bonus_on', '0') === '1') {
+            $photo = trim((string)getSetting('img_referral_bonus', ''));
+        }
+
+        $extra = [
+            'parse_mode'               => 'HTML',
+            'disable_web_page_preview' => true,
+        ];
+
+        $res = null;
+        if ($photo !== '' && preg_match('#^https?://#i', $photo)) {
+            $res = $bot->sendPhoto($referrerId, $photo, $text, $extra);
+        } else {
+            $res = $bot->sendMessage($referrerId, $text, $extra);
+        }
+
+        if (!$res || !($res['ok'] ?? false)) {
+            $plain = preg_replace('/<tg-emoji\s+emoji-id="\d+">(.*?)<\/tg-emoji>/su', '$1', $text) ?? $text;
+            if ($photo !== '' && preg_match('#^https?://#i', $photo)) {
+                $bot->sendPhoto($referrerId, $photo, $plain, $extra);
+            } else {
+                $bot->sendMessage($referrerId, $plain, $extra);
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[REFERRAL] ' . $e->getMessage());
+        try {
+            if (getDB()->inTransaction()) {
+                getDB()->rollBack();
+            }
+        } catch (Throwable $e2) {}
+    }
+}
+
 function ensureBotStateColumns(): void
 {
     static $done = false;
