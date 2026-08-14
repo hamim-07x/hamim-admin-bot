@@ -39,6 +39,11 @@ $s = getSetting('currency_symbol', '$');
 $network = getSetting('network', 'BEP20');
 $token = trim((string)getSetting('bot_token', ''));
 
+function generateTxHash(): string
+{
+    return '0x' . bin2hex(random_bytes(32));
+}
+
 function normalizeChannelChat(string $channel): string
 {
     $channel = trim($channel);
@@ -72,19 +77,6 @@ function channelPublicLink(string $channel): string
     return 'https://t.me/' . ltrim($channel, '@');
 }
 
-function emojiIdFor(string $key, string $default): string
-{
-    $id = '';
-    try {
-        $id = preg_replace('/\D+/', '', (string)getSetting($key, ''));
-    } catch (Throwable $e) {
-    }
-    if ($id === '' || strlen($id) < 8) {
-        $id = $default;
-    }
-    return $id;
-}
-
 function notifySendHtml(TelegramBot $bot, string|int $chatId, string $html, string $photoUrl = '', array $extra = []): bool
 {
     $extra['parse_mode'] = 'HTML';
@@ -108,67 +100,37 @@ function notifySendHtml(TelegramBot $bot, string|int $chatId, string $html, stri
 }
 
 /**
- * Channel notify with native custom_emoji entities (same as private chat).
- * No username, no tx hash — User ID + Withdrawal # + Amount + Address + Network + Status Paid.
+ * Payment CHANNEL — standard Unicode emojis only.
+ * Custom premium emoji often does NOT render in public channels.
  */
-function notifyChannelRich(TelegramBot $bot, string $chat, array $ctx, string $photoUrl, array $extra): bool
+function buildChannelText(array $ctx): string
 {
-    $idOk   = emojiIdFor('ce_payout_ok', '5206607081334906820');
-    $idBal  = emojiIdFor('currency_emoji_id', emojiIdFor('ce_balance', '5197434882321567830'));
-    $idCard = emojiIdFor('ce_card', '5445353829304387411');
-    $idNet  = emojiIdFor('ce_network', '5224450179368767019');
-    $idRec  = emojiIdFor('ce_receipt', '5444856076954520455');
-    $idUser = emojiIdFor('ce_ref_1', '5332724926216428039');
-
-    $parts = [
-        ['e' => $idOk, 'f' => '✅'],
-        ['t' => ' '],
-        ['b' => true, 't' => 'Payout successful'],
-        ['t' => "\n\n"],
-        ['e' => $idUser, 'f' => '👤'],
-        ['t' => ' User ID: '],
-        ['code' => true, 't' => (string)$ctx['userId']],
-        ['t' => "\n"],
-        ['e' => $idRec, 'f' => '🧾'],
-        ['t' => ' Withdrawal: '],
-        ['b' => true, 't' => '#' . $ctx['id']],
-        ['t' => "\n"],
-        ['e' => $idBal, 'f' => '💵'],
-        ['t' => ' Amount: '],
-        ['b' => true, 't' => $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c']],
-        ['t' => "\n"],
-        ['e' => $idCard, 'f' => '💳'],
-        ['t' => " Address:\n"],
-        ['code' => true, 't' => $ctx['address']],
-        ['t' => "\n"],
-        ['e' => $idNet, 'f' => '🌐'],
-        ['t' => ' Network: '],
-        ['b' => true, 't' => $ctx['network']],
-        ['t' => "\n"],
-        ['e' => $idOk, 'f' => '✅'],
-        ['t' => ' Status: '],
-        ['b' => true, 't' => 'SUCCESSFULLY PAID'],
-        ['t' => "\n\n"],
-        ['e' => $idOk, 'f' => '✅'],
-        ['t' => ' '],
-        ['b' => true, 't' => 'Your withdrawal has been processed successfully.'],
+    $lines = [
+        '🎟 <b>New Payout successfully Paid</b>',
+        '',
+        '👤 User ID: <code>' . $ctx['userId'] . '</code>',
+        '💵 Amount: <b>' . $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c'] . '</b>',
+        '💳 Address:',
+        '<code>' . htmlspecialchars($ctx['address']) . '</code>',
+        '🌐 Network: <b>' . htmlspecialchars($ctx['network']) . '</b>',
+        '🧾 Status: <b>COMPLETE</b>',
+        '',
+        '🔗 Transaction:',
+        '<code>' . htmlspecialchars($ctx['txHash']) . '</code>',
     ];
+    return implode("\n", $lines);
+}
 
-    $res = $bot->sendRich($chat, $parts, $extra, $photoUrl);
-    if ($res && ($res['ok'] ?? false)) {
-        return true;
-    }
-
+/** Personal chat — premium custom emoji (bot owner Premium). */
+function buildUserText(array $ctx): string
+{
     $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
-    $html .= ce('ce_ref_1') . ' User ID: <code>' . $ctx['userId'] . "</code>\n";
-    $html .= ce('ce_receipt') . ' Withdrawal: <b>#' . $ctx['id'] . "</b>\n";
     $html .= ce('ce_balance') . ' Amount: <b>' . $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c'] . "</b>\n";
     $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($ctx['address']) . "</code>\n";
     $html .= ce('ce_network') . ' Network: <b>' . htmlspecialchars($ctx['network']) . "</b>\n";
-    $html .= ce('ce_payout_ok') . " Status: <b>SUCCESSFULLY PAID</b>\n\n";
-    $html .= ce('ce_payout_ok') . ' <b>Your withdrawal has been processed successfully.</b>';
-
-    return notifySendHtml($bot, $chat, $html, $photoUrl, $extra);
+    $html .= ce('ce_receipt') . " Status: <b>COMPLETE</b>\n";
+    $html .= ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($ctx['txHash']) . '</code>';
+    return $html;
 }
 
 if ($action === 'reject') {
@@ -189,7 +151,18 @@ if ($action === 'reject') {
 
 $mode = getSetting('withdraw_mode', 'manual');
 $newStatus = ($mode === 'auto') ? 'paid' : 'approved';
-$db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW() WHERE id=?')->execute([$newStatus, $id]);
+$txHash = generateTxHash();
+
+try {
+    $cols = $db->query("SHOW COLUMNS FROM withdrawals LIKE 'tx_hash'")->fetch();
+    if (!$cols) {
+        $db->exec("ALTER TABLE withdrawals ADD COLUMN tx_hash VARCHAR(128) DEFAULT NULL");
+    }
+    $db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW(), tx_hash=? WHERE id=?')
+        ->execute([$newStatus, $txHash, $id]);
+} catch (Throwable $e) {
+    $db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW() WHERE id=?')->execute([$newStatus, $id]);
+}
 
 if ($token === '') {
     $_SESSION['flash'] = "Withdrawal #{$id} marked {$newStatus}, but bot token is empty.";
@@ -214,11 +187,16 @@ if ($payChannelRaw === '') {
 $chat = normalizeChannelChat($payChannelRaw);
 $channelLink = channelPublicLink($payChannelRaw);
 
-$coreMsg  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
-$coreMsg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
-$coreMsg .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-$coreMsg .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
-$coreMsg .= ce('ce_receipt') . " Status: <b>SUCCESSFULLY PAID</b>";
+$ctx = [
+    'userId'  => $userId,
+    's'       => $s,
+    'amount'  => $amount,
+    'c'       => $c,
+    'address' => $address,
+    'network' => $network,
+    'id'      => $id,
+    'txHash'  => $txHash,
+];
 
 if (getSetting('user_payout_alert', '1') === '1') {
     $userExtra = [];
@@ -234,7 +212,7 @@ if (getSetting('user_payout_alert', '1') === '1') {
         }
         $userExtra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
     }
-    $userOk = notifySendHtml($bot, $userId, $coreMsg, $successPhoto, $userExtra);
+    $userOk = notifySendHtml($bot, $userId, buildUserText($ctx), $successPhoto, $userExtra);
     if (!$userOk) {
         $notes[] = 'user DM failed';
     }
@@ -259,17 +237,8 @@ if ($chat !== '') {
         $extra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
     }
 
-    $ctx = [
-        'userId'  => $userId,
-        's'       => $s,
-        'amount'  => $amount,
-        'c'       => $c,
-        'address' => $address,
-        'network' => $network,
-        'id'      => $id,
-    ];
-
-    $channelOk = notifyChannelRich($bot, $chat, $ctx, $successPhoto, $extra);
+    $channelText = buildChannelText($ctx);
+    $channelOk = notifySendHtml($bot, $chat, $channelText, $successPhoto, $extra);
     if (!$channelOk) {
         $notes[] = 'channel notify failed (bot admin? @username?)';
     }
