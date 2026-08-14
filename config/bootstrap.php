@@ -8,15 +8,18 @@ ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 ini_set('session.cookie_httponly', '1');
 
+$vendor = dirname(__DIR__) . '/vendor/autoload.php';
+if (is_file($vendor)) {
+    require_once $vendor;
+}
+
 require_once __DIR__ . '/database.php';
 
 if (session_status() === PHP_SESSION_NONE) {
-    // Railway terminates TLS; app usually sees HTTP unless X-Forwarded-Proto is set
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
         || (isset($_SERVER['HTTP_X_FORWARDED_SSL']) && $_SERVER['HTTP_X_FORWARDED_SSL'] === 'on');
 
-    // Always treat production Railway as secure if Host looks like railway / custom domain over public URL
     $host = (string)($_SERVER['HTTP_HOST'] ?? '');
     if (!$https && $host !== '' && (str_contains($host, 'railway.app') || str_contains($host, 'up.railway.app'))) {
         $https = true;
@@ -49,7 +52,6 @@ function adminAuthSecret(): string
     return hash('sha256', (string)$s);
 }
 
-/** Set a short-lived signed cookie so login survives if PHP session file is lost between requests */
 function setAdminAuthCookie(int $adminId, string $username): void
 {
     $exp = time() + 86400 * 7;
