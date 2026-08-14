@@ -1,1 +1,252 @@
-PLACEHOLDER_WD
+<?php
+require_once __DIR__ . '/../../config/bootstrap.php';
+require_once __DIR__ . '/../../bot/TelegramBot.php';
+require_once __DIR__ . '/../../bot/helpers.php';
+requireAdmin();
+
+$id = (int)($_POST['id'] ?? 0);
+$action = $_POST['action'] ?? '';
+if ($id <= 0 || !in_array($action, ['approve', 'reject'], true)) {
+    $_SESSION['flash'] = 'Invalid request';
+    header('Location: /admin/?page=withdrawals');
+    exit;
+}
+
+$db = getDB();
+$stmt = $db->prepare('SELECT * FROM withdrawals WHERE id = ? LIMIT 1');
+$stmt->execute([$id]);
+$w = $stmt->fetch();
+if (!$w) {
+    $_SESSION['flash'] = 'Withdrawal not found';
+    header('Location: /admin/?page=withdrawals');
+    exit;
+}
+if (($w['status'] ?? '') !== 'pending') {
+    $_SESSION['flash'] = 'Already processed';
+    header('Location: /admin/?page=withdrawals');
+    exit;
+}
+
+$userId = (int)$w['user_id'];
+$amountRaw = (float)$w['amount'];
+$amount = rtrim(rtrim(number_format($amountRaw, 6, '.', ''), '0'), '.');
+if ($amount === '') {
+    $amount = '0';
+}
+$address = (string)$w['address'];
+$c = getSetting('currency_name', 'USDT');
+$s = getSetting('currency_symbol', '$');
+$network = getSetting('network', 'BEP20');
+$token = trim((string)getSetting('bot_token', ''));
+
+function generateTxHash(): string
+{
+    return '0x' . bin2hex(random_bytes(32));
+}
+
+function normalizeChannelChat(string $channel): string
+{
+    $channel = trim($channel);
+    if ($channel === '') {
+        return '';
+    }
+    if (str_starts_with($channel, '@') || str_starts_with($channel, '-')) {
+        return $channel;
+    }
+    if (preg_match('/^\d+$/', $channel)) {
+        if (strlen($channel) < 14) {
+            return '-100' . $channel;
+        }
+        return $channel;
+    }
+    return '@' . ltrim($channel, '@');
+}
+
+function channelPublicLink(string $channel): string
+{
+    $channel = trim($channel);
+    if ($channel === '') {
+        return '';
+    }
+    if (preg_match('#^https?://#i', $channel)) {
+        return $channel;
+    }
+    if (preg_match('/^-?\d+$/', $channel)) {
+        return '';
+    }
+    return 'https://t.me/' . ltrim($channel, '@');
+}
+
+function notifySendHtml(TelegramBot $bot, string|int $chatId, string $html, string $photoUrl = '', array $extra = []): bool
+{
+    $extra['parse_mode'] = 'HTML';
+    $extra['disable_web_page_preview'] = true;
+    $res = null;
+    if ($photoUrl !== '' && preg_match('#^https?://#i', $photoUrl)) {
+        $res = $bot->sendPhoto($chatId, $photoUrl, $html, $extra);
+    } else {
+        $res = $bot->sendMessage($chatId, $html, $extra);
+    }
+    if ($res && ($res['ok'] ?? false)) {
+        return true;
+    }
+    $plain = preg_replace('/<tg-emoji\s+emoji-id="\d+">(.*?)<\/tg-emoji>/su', '$1', $html) ?? $html;
+    if ($photoUrl !== '' && preg_match('#^https?://#i', $photoUrl)) {
+        $res = $bot->sendPhoto($chatId, $photoUrl, $plain, $extra);
+    } else {
+        $res = $bot->sendMessage($chatId, $plain, $extra);
+    }
+    return (bool)($res && ($res['ok'] ?? false));
+}
+
+/** Payment CHANNEL — standard Unicode emojis (always visible). */
+function buildChannelText(array $ctx): string
+{
+    $lines = [
+        '🎟 <b>New Payout successfully Paid</b>',
+        '',
+        '👤 User ID: <code>' . $ctx['userId'] . '</code>',
+        '💵 Amount: <b>' . $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c'] . '</b>',
+        '💳 Address:',
+        '<code>' . htmlspecialchars($ctx['address']) . '</code>',
+        '🌐 Network: <b>' . htmlspecialchars($ctx['network']) . '</b>',
+        '🧾 Status: <b>COMPLETE</b>',
+        '',
+        '🔗 Transaction:',
+        '<code>' . htmlspecialchars($ctx['txHash']) . '</code>',
+    ];
+    return implode("\n", $lines);
+}
+
+/** Personal chat — premium custom emoji + screenshot format. */
+function buildUserText(array $ctx): string
+{
+    $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
+    $html .= ce('ce_balance') . ' Amount: <b>' . $ctx['s'] . $ctx['amount'] . ' ' . $ctx['c'] . "</b>\n";
+    $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($ctx['address']) . "</code>\n";
+    $html .= ce('ce_network') . ' Network: <b>' . htmlspecialchars($ctx['network']) . "</b>\n";
+    $html .= ce('ce_receipt') . " Status: <b>APPROVED</b>\n";
+    $html .= ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($ctx['txHash']) . '</code>';
+    return $html;
+}
+
+if ($action === 'reject') {
+    $db->prepare("UPDATE withdrawals SET status='rejected', processed_at=NOW() WHERE id=?")->execute([$id]);
+    $db->prepare('UPDATE users SET balance = balance + ? WHERE id = ?')->execute([$amountRaw, $userId]);
+
+    if ($token !== '' && getSetting('user_payout_alert', '1') === '1') {
+        $bot = new TelegramBot($token);
+        $msg = ce('ce_payout_no') . " <b>Payout rejected</b>\n\n";
+        $msg .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
+        $msg .= 'Your balance has been refunded.';
+        notifySendHtml($bot, $userId, $msg);
+    }
+    $_SESSION['flash'] = "Withdrawal #{$id} rejected (balance refunded).";
+    header('Location: /admin/?page=withdrawals');
+    exit;
+}
+
+$mode = getSetting('withdraw_mode', 'manual');
+$newStatus = ($mode === 'auto') ? 'paid' : 'approved';
+$txHash = generateTxHash();
+
+try {
+    $cols = $db->query("SHOW COLUMNS FROM withdrawals LIKE 'tx_hash'")->fetch();
+    if (!$cols) {
+        $db->exec("ALTER TABLE withdrawals ADD COLUMN tx_hash VARCHAR(128) DEFAULT NULL");
+    }
+    $db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW(), tx_hash=? WHERE id=?')
+        ->execute([$newStatus, $txHash, $id]);
+} catch (Throwable $e) {
+    $db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW() WHERE id=?')->execute([$newStatus, $id]);
+}
+
+if ($token === '') {
+    $_SESSION['flash'] = "Withdrawal #{$id} marked {$newStatus}, but bot token is empty.";
+    header('Location: /admin/?page=withdrawals');
+    exit;
+}
+
+$bot = new TelegramBot($token);
+$userOk = true;
+$channelOk = true;
+$notes = [];
+
+$successPhoto = '';
+if (getSetting('img_payout_success_on', '0') === '1') {
+    $successPhoto = trim((string)getSetting('img_payout_success', ''));
+}
+
+$payChannelRaw = trim((string)getSetting('payment_channel', ''));
+if ($payChannelRaw === '') {
+    $payChannelRaw = trim((string)getSetting('notify_channel', ''));
+}
+$chat = normalizeChannelChat($payChannelRaw);
+$channelLink = channelPublicLink($payChannelRaw);
+
+$ctx = [
+    'userId'  => $userId,
+    's'       => $s,
+    'amount'  => $amount,
+    'c'       => $c,
+    'address' => $address,
+    'network' => $network,
+    'id'      => $id,
+    'txHash'  => $txHash,
+];
+
+if (getSetting('user_payout_alert', '1') === '1') {
+    $userExtra = [];
+    if ($channelLink !== '') {
+        $viewText = trim((string)getSetting('user_channel_btn_text', 'View Payment Channel'));
+        if ($viewText === '') {
+            $viewText = 'View Payment Channel';
+        }
+        $viewIcon = preg_replace('/\D+/', '', (string)getSetting('user_channel_btn_emoji_id', '5332455502917949981'));
+        $btn = ['text' => $viewText, 'url' => $channelLink];
+        if ($viewIcon !== '' && strlen($viewIcon) >= 8) {
+            $btn['icon_custom_emoji_id'] = $viewIcon;
+        }
+        $userExtra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
+    }
+    $userOk = notifySendHtml($bot, $userId, buildUserText($ctx), $successPhoto, $userExtra);
+    if (!$userOk) {
+        $notes[] = 'user DM failed';
+    }
+}
+
+if ($chat !== '') {
+    $botUser = ltrim((string)getSetting('bot_username', ''), '@');
+    $btnText = trim((string)getSetting('notify_btn_text', 'Start Bot'));
+    if ($btnText === '') {
+        $btnText = 'Start Bot';
+    }
+    $btnIcon = preg_replace('/\D+/', '', (string)getSetting('notify_btn_emoji_id', '5416041192905265756'));
+    $extra = ['disable_web_page_preview' => true];
+    if ($botUser !== '') {
+        $btn = [
+            'text' => $btnText,
+            'url'  => 'https://t.me/' . $botUser . '?start=1',
+        ];
+        if ($btnIcon !== '' && strlen($btnIcon) >= 8) {
+            $btn['icon_custom_emoji_id'] = $btnIcon;
+        }
+        $extra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
+    }
+
+    $channelText = buildChannelText($ctx);
+    $channelOk = notifySendHtml($bot, $chat, $channelText, $successPhoto, $extra);
+    if (!$channelOk) {
+        $notes[] = 'channel notify failed (bot admin? @username?)';
+    }
+}
+
+$flash = "Withdrawal #{$id} marked {$newStatus}.";
+if ($userOk && (empty($chat) || $channelOk)) {
+    $flash .= ' Notifications sent.';
+} elseif ($notes) {
+    $flash .= ' Issues: ' . implode('; ', $notes);
+}
+$_SESSION['flash'] = $flash;
+header('Location: /admin/?page=withdrawals');
+exit;
