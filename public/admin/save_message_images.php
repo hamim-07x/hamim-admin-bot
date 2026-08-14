@@ -10,6 +10,7 @@ $slots = [
     'img_payout',
     'img_earn',
     'img_payout_success',
+    'img_referral_bonus',
 ];
 foreach ($slots as $k) {
     if (isset($_POST[$k])) {
