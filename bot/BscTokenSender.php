@@ -1,6 +1,6 @@
 <?php
 /**
- * BEP-20 (BSC) transfer — multi-RPC, gas floor, nonce retry.
+ * BEP-20 (BSC) transfer — fast multi-RPC failover, gas floor, nonce retry.
  */
 class BscTokenSender
 {
@@ -25,12 +25,17 @@ class BscTokenSender
                 $list[] = $u;
             }
         }
+        // Fast public BSC endpoints first (avoid slow/timeout-prone nodes)
         foreach ([
             'https://bsc-dataseed.binance.org',
             'https://bsc-dataseed1.binance.org',
             'https://bsc-dataseed2.binance.org',
+            'https://bsc-dataseed3.binance.org',
+            'https://bsc-dataseed4.binance.org',
+            'https://bsc-dataseed1.defibit.io',
+            'https://bsc-dataseed1.ninicoin.io',
+            'https://1rpc.io/bnb',
             'https://rpc.ankr.com/bsc',
-            'https://bsc.publicnode.com',
         ] as $fb) {
             if (!in_array($fb, $list, true)) {
                 $list[] = $fb;
@@ -88,19 +93,26 @@ class BscTokenSender
             $data = $this->encodeTransfer($toAddress, $amountWei);
 
             $lastErr = '';
+            $errors = [];
+
             foreach ($this->rpcs as $rpc) {
                 $this->activeRpc = $rpc;
                 try {
-                    $gasPriceHex = $this->rpcQuantity('eth_gasPrice', []);
-                    if ($gasPriceHex === '0' || $gasPriceHex === '') {
-                        $gasPriceHex = '12a05f200';
-                    } else {
-                        $gasPriceHex = $this->hexMulPercent($gasPriceHex, 150);
+                    // Fixed high gas — skip fragile estimate when possible; still try estimate
+                    $gasPriceHex = '12a05f200'; // 5 gwei default floor
+                    try {
+                        $gp = $this->rpcQuantity('eth_gasPrice', []);
+                        if ($gp !== '0' && $gp !== '') {
+                            $gasPriceHex = $this->hexMulPercent($gp, 150);
+                        }
+                    } catch (Throwable $e) {
+                        // keep floor
                     }
-                    $gasPriceHex = $this->hexMax($gasPriceHex, '12a05f200');
-                    $gasPriceHex = $this->hexMax($gasPriceHex, '2faf080');
+                    $gasPriceHex = $this->hexMax($gasPriceHex, '12a05f200'); // 5 gwei
+                    $gasPriceHex = $this->hexMax($gasPriceHex, '2faf080');    // 50m wei
+                    $gasPriceHex = $this->hexMax($gasPriceHex, '3b9aca00');  // 1 gwei min safety → actually 1e9=3b9aca00
 
-                    $gasLimitHex = '30d40';
+                    $gasLimitHex = '30d40'; // 200000
                     try {
                         $est = $this->rpcQuantity('eth_estimateGas', [[
                             'from' => $from,
@@ -108,15 +120,15 @@ class BscTokenSender
                             'data' => $data,
                         ]]);
                         if ($est !== '0' && $est !== '') {
-                            $gasLimitHex = $this->hexMulPercent($est, 150);
+                            $gasLimitHex = $this->hexMulPercent($est, 160);
                             $gasLimitHex = $this->hexMax($gasLimitHex, '186a0');
                         }
                     } catch (Throwable $e) {
-                        $lastErr = 'estimateGas: ' . $e->getMessage()
-                            . ' (need TOKEN + BNB on hot wallet; check contract)';
+                        // continue with default gas limit
                     }
 
                     $nonceHex = $this->fetchNonceHex($from);
+
                     for ($attempt = 0; $attempt < 5; $attempt++) {
                         try {
                             $tx = [
@@ -140,25 +152,33 @@ class BscTokenSender
                             $lastErr = $msg;
                             if (preg_match('/next nonce\s*(\d+)/i', $msg, $m)) {
                                 $nonceHex = ltrim($this->decToHexPad($m[1], 0), '0') ?: '0';
-                                usleep(250000);
+                                usleep(200000);
                                 continue;
                             }
                             if (stripos($msg, 'nonce too low') !== false || stripos($msg, 'already known') !== false) {
+                                usleep(250000);
                                 $nonceHex = $this->fetchNonceHex($from);
-                                usleep(300000);
                                 continue;
                             }
+                            // connection / underpriced → next RPC
                             break;
                         }
                     }
+                    $errors[] = basename(parse_url($rpc, PHP_URL_HOST) ?: $rpc) . ': ' . $lastErr;
                 } catch (Throwable $e) {
                     $lastErr = $e->getMessage();
+                    $errors[] = basename(parse_url($rpc, PHP_URL_HOST) ?: $rpc) . ': ' . $lastErr;
                     continue;
                 }
             }
+
+            $summary = $lastErr;
+            if ($errors) {
+                $summary = implode(' | ', array_slice($errors, -3));
+            }
             return [
                 'ok' => false,
-                'error' => $lastErr !== '' ? $lastErr : 'All RPCs failed',
+                'error' => $summary !== '' ? $summary : 'All RPCs failed',
                 'from' => $from,
             ];
         } catch (Throwable $e) {
@@ -168,8 +188,16 @@ class BscTokenSender
 
     private function fetchNonceHex(string $from): string
     {
-        $pending = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
-        $latest = $this->rpcQuantity('eth_getTransactionCount', [$from, 'latest']);
+        $pending = '0';
+        $latest = '0';
+        try {
+            $pending = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
+        } catch (Throwable $e) {
+        }
+        try {
+            $latest = $this->rpcQuantity('eth_getTransactionCount', [$from, 'latest']);
+        } catch (Throwable $e) {
+        }
         return $this->hexMax($pending, $latest);
     }
 
@@ -307,7 +335,12 @@ class BscTokenSender
         if (function_exists('gmp_init')) {
             return gmp_cmp(gmp_init($a, 16), gmp_init($b, 16)) >= 0 ? $a : $b;
         }
-        return (hexdec($a) >= hexdec($b)) ? $a : $b;
+        $a = ltrim($a, '0') ?: '0';
+        $b = ltrim($b, '0') ?: '0';
+        if (strlen($a) !== strlen($b)) {
+            return strlen($a) > strlen($b) ? $a : $b;
+        }
+        return strcasecmp($a, $b) >= 0 ? $a : $b;
     }
 
     private function hexMulPercent(string $hexQty, int $percent): string
@@ -379,16 +412,22 @@ class BscTokenSender
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 8,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => true,
         ]);
         $res = curl_exec($ch);
         $err = curl_error($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
-        if ($res === false) {
-            throw new RuntimeException('RPC connection failed (' . $this->activeRpc . '): ' . $err);
+        if ($res === false || $res === '') {
+            throw new RuntimeException('RPC timeout/fail (' . $this->activeRpc . '): ' . ($err ?: 'empty'));
         }
         $data = json_decode($res, true);
+        if (!is_array($data)) {
+            throw new RuntimeException('RPC bad JSON (' . $this->activeRpc . ') HTTP ' . $code);
+        }
         if (isset($data['error'])) {
             $msg = is_array($data['error'])
                 ? ($data['error']['message'] ?? json_encode($data['error']))

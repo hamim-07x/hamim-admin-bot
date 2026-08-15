@@ -135,12 +135,12 @@ class PayoutService
         }
 
         if ($notifyUser && getSetting('user_payout_alert', '1') === '1') {
-            $html  = "✅ <b>Payout successful</b>\n\n";
+            $html  = "🎟 <b>Payout successful</b>\n\n";
             $html .= "💵 Amount: <b>{$s}{$amount} {$c}</b>\n";
             $html .= "💳 Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-            $html .= "✅ Status: <b>COMPLETE</b>";
+            $html .= "🧾 Status: <b>COMPLETE</b> ✅";
             if ($txHash !== '') {
-                $html .= "\n🔗 Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
+                $html .= "\n\n🔗 Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
             }
             $extra = [
                 'parse_mode' => 'HTML',
@@ -161,7 +161,6 @@ class PayoutService
             } elseif (!str_starts_with($chat, '@') && !str_starts_with($chat, '-')) {
                 $chat = '@' . ltrim($chat, '@');
             }
-            // Plain unicode emojis — works in public channels (no custom emoji / broken receipt glyph)
             $lines = [
                 '🎟 <b>New Payout successfully Paid</b>',
                 '',
@@ -169,7 +168,7 @@ class PayoutService
                 '💵 Amount: <b>' . $s . $amount . ' ' . $c . '</b>',
                 '💳 Address:',
                 '<code>' . htmlspecialchars($address) . '</code>',
-                '✅ Status: <b>COMPLETE</b>',
+                '🧾 Status: <b>COMPLETE</b> ✅',
             ];
             if ($txHash !== '') {
                 $lines[] = '';
