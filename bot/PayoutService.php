@@ -1,15 +1,21 @@
 <?php
 /**
  * Complete a pending withdrawal: optional on-chain BEP-20 send + status + notify.
- * Demo mode: looks real (fake tx hash + notifications) but never sends on-chain.
+ * Demo mode: fake tx hash + notifications, no on-chain send.
  */
 require_once __DIR__ . '/BscTokenSender.php';
 
 class PayoutService
 {
-    /** @return array{ok:bool,tx?:string,error?:string,status?:string} */
-    public static function completeWithdrawal(int $id, ?TelegramBot $bot = null): array
+    /**
+     * @param array{notify_user?:bool,notify_channel?:bool} $opts
+     * @return array{ok:bool,tx?:string,error?:string,status?:string}
+     */
+    public static function completeWithdrawal(int $id, ?TelegramBot $bot = null, array $opts = []): array
     {
+        $notifyUser = $opts['notify_user'] ?? true;
+        $notifyChannel = $opts['notify_channel'] ?? true;
+
         $db = getDB();
         $stmt = $db->prepare('SELECT * FROM withdrawals WHERE id = ? LIMIT 1');
         $stmt->execute([$id]);
@@ -60,21 +66,33 @@ class PayoutService
             $db->prepare('UPDATE withdrawals SET status=?, processed_at=NOW() WHERE id=?')->execute([$status, $id]);
         }
 
+        try {
+            $db->prepare("UPDATE transactions SET status='completed' WHERE user_id=? AND type='withdraw' AND status='pending' AND note=?")
+                ->execute([(int)$w['user_id'], $address]);
+        } catch (Throwable $e) {
+        }
+
         $token = trim((string)getSetting('bot_token', ''));
-        if ($token !== '') {
+        if ($token !== '' && ($notifyUser || $notifyChannel)) {
             if (!$bot) {
                 require_once __DIR__ . '/TelegramBot.php';
                 require_once __DIR__ . '/helpers.php';
                 $bot = new TelegramBot($token);
             }
-            self::sendNotifications($bot, $w, $status, $txHash);
+            self::sendNotifications($bot, $w, $status, $txHash, $notifyUser, $notifyChannel);
         }
 
         return ['ok' => true, 'tx' => $txHash, 'status' => $status];
     }
 
-    private static function sendNotifications(TelegramBot $bot, array $w, string $status, string $txHash): void
-    {
+    private static function sendNotifications(
+        TelegramBot $bot,
+        array $w,
+        string $status,
+        string $txHash,
+        bool $notifyUser = true,
+        bool $notifyChannel = true
+    ): void {
         require_once __DIR__ . '/helpers.php';
         $userId = (int)$w['user_id'];
         $amountRaw = (float)$w['amount'];
@@ -96,7 +114,7 @@ class PayoutService
             $payChannelRaw = trim((string)getSetting('notify_channel', ''));
         }
 
-        if (getSetting('user_payout_alert', '1') === '1') {
+        if ($notifyUser && getSetting('user_payout_alert', '1') === '1') {
             $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
             $html .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
             $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
@@ -126,7 +144,7 @@ class PayoutService
             }
         }
 
-        if ($payChannelRaw !== '') {
+        if ($notifyChannel && $payChannelRaw !== '') {
             $chat = $payChannelRaw;
             if (!str_starts_with($chat, '@') && !str_starts_with($chat, '-') && preg_match('/^\d+$/', $chat)) {
                 $chat = (strlen($chat) < 14) ? '-100' . $chat : $chat;
