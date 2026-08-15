@@ -1,6 +1,6 @@
 <?php
 /**
- * BEP-20 (BSC) transfer — nonce fix, already-known=success, gas/token preflight.
+ * BEP-20 (BSC) — low gas, nonce fix, already-known=success, balance preflight.
  */
 class BscTokenSender
 {
@@ -11,13 +11,8 @@ class BscTokenSender
     private int $decimals;
     private string $activeRpc = '';
 
-    public function __construct(
-        string $rpcUrl,
-        string $privateKeyHex,
-        string $tokenContract,
-        int $chainId = 56,
-        int $decimals = 18
-    ) {
+    public function __construct(string $rpcUrl, string $privateKeyHex, string $tokenContract, int $chainId = 56, int $decimals = 18)
+    {
         $list = [];
         foreach (preg_split('/[\s,;]+/', $rpcUrl) as $u) {
             $u = rtrim(trim($u), '/');
@@ -82,29 +77,23 @@ class BscTokenSender
             if (!preg_match('/^0x[a-fA-F0-9]{40}$/', $toAddress)) {
                 return ['ok' => false, 'error' => 'Invalid recipient address (need 0x + 40 hex)'];
             }
-
             $from = $this->addressFromPrivateKey($this->privateKey);
             $amountWei = $this->toTokenUnits($amountHuman, $this->decimals);
             if ($amountWei === '0') {
                 return ['ok' => false, 'error' => 'Amount is zero'];
             }
             $data = $this->encodeTransfer($toAddress, $amountWei);
-
             $gasPriceHex = $this->fetchGasPriceHex();
             $gasLimitHex = $this->estimateGasHex($from, $data);
-
             $pre = $this->preflightBalances($from, $amountWei, $gasPriceHex, $gasLimitHex);
             if (!($pre['ok'] ?? false)) {
                 return ['ok' => false, 'error' => (string)$pre['error'], 'from' => $from];
             }
-
             $nonceDec = $this->fetchMaxNonceDecimal($from);
             $lastErr = '';
             $errors = [];
-
             for ($attempt = 0; $attempt < 8; $attempt++) {
                 $nonceHex = ltrim($this->decToHexPad((string)$nonceDec, 0), '0') ?: '0';
-
                 $tx = [
                     'nonce' => $nonceHex,
                     'gasPrice' => $gasPriceHex,
@@ -115,7 +104,6 @@ class BscTokenSender
                     'chainId' => $this->chainId,
                 ];
                 $raw = $this->signTransaction($tx, $this->privateKey);
-
                 foreach ($this->rpcs as $rpc) {
                     $this->activeRpc = $rpc;
                     try {
@@ -128,22 +116,17 @@ class BscTokenSender
                         $msg = $e->getMessage();
                         $lastErr = $msg;
                         $host = parse_url($rpc, PHP_URL_HOST) ?: $rpc;
-
-                        if (stripos($msg, 'already known') !== false
-                            || stripos($msg, 'known transaction') !== false
-                            || stripos($msg, 'already imported') !== false) {
+                        if (stripos($msg, 'already known') !== false || stripos($msg, 'known transaction') !== false || stripos($msg, 'already imported') !== false) {
                             if (preg_match('/(0x[a-fA-F0-9]{64})/', $msg, $hm)) {
                                 return ['ok' => true, 'tx' => $hm[1], 'from' => $from];
                             }
                             $computed = '0x' . \kornrunner\Keccak::hash(hex2bin(substr($raw, 2)), 256);
                             return ['ok' => true, 'tx' => $computed, 'from' => $from];
                         }
-
                         if (preg_match('/next nonce[:\s]+(\d+)/i', $msg, $m2)) {
                             $next = (int)$m2[1];
                             if ($next > $nonceDec) {
                                 $nonceDec = $next;
-                                $errors[] = "$host: nonce→$next";
                                 break;
                             }
                             $nonceDec++;
@@ -158,19 +141,13 @@ class BscTokenSender
                             break;
                         }
                         if (stripos($msg, 'underpriced') !== false) {
-                            $gasPriceHex = $this->hexMulPercent($gasPriceHex, 120);
-                            $gasPriceHex = $this->hexMax($gasPriceHex, '12a05f200');
+                            $gasPriceHex = $this->hexMulPercent($gasPriceHex, 112);
                             break;
                         }
                         if (stripos($msg, 'insufficient funds') !== false || stripos($msg, 'insufficient balance') !== false) {
-                            return [
-                                'ok' => false,
-                                'error' => 'Hot wallet has no BNB for gas fee (or gas finished). Add BNB to hot wallet.',
-                                'from' => $from,
-                            ];
+                            return ['ok' => false, 'error' => 'Hot wallet has no BNB for gas fee (or gas finished). Add BNB to hot wallet.', 'from' => $from];
                         }
-                        if (stripos($msg, 'timeout') !== false || stripos($msg, 'Unauthorized') !== false
-                            || stripos($msg, 'RPC') !== false || stripos($msg, 'empty') !== false) {
+                        if (stripos($msg, 'timeout') !== false || stripos($msg, 'Unauthorized') !== false || stripos($msg, 'RPC') !== false) {
                             $errors[] = "$host: skip";
                             continue;
                         }
@@ -178,7 +155,6 @@ class BscTokenSender
                         continue;
                     }
                 }
-
                 if ($attempt >= 2) {
                     $fresh = $this->fetchMaxNonceDecimal($from);
                     if ($fresh > $nonceDec) {
@@ -186,7 +162,6 @@ class BscTokenSender
                     }
                 }
             }
-
             $summary = $lastErr;
             if ($errors) {
                 $summary = implode(' | ', array_slice($errors, -4));
@@ -194,11 +169,7 @@ class BscTokenSender
                     $summary .= ' | ' . $lastErr;
                 }
             }
-            return [
-                'ok' => false,
-                'error' => $this->humanizeError($summary !== '' ? $summary : 'All RPCs failed'),
-                'from' => $from,
-            ];
+            return ['ok' => false, 'error' => $this->humanizeError($summary !== '' ? $summary : 'All RPCs failed'), 'from' => $from];
         } catch (Throwable $e) {
             return ['ok' => false, 'error' => $this->humanizeError($e->getMessage())];
         }
@@ -219,12 +190,8 @@ class BscTokenSender
         $bnb = $this->hexToDecString($bnbHex);
         $gasCost = $this->hexMulHex($gasPriceHex, $gasLimitHex);
         if ($this->decCmp($bnb, $gasCost) < 0) {
-            return [
-                'ok' => false,
-                'error' => 'Hot wallet has no BNB for gas fee (or gas almost finished). Send some BNB to the hot wallet, then try again.',
-            ];
+            return ['ok' => false, 'error' => 'Hot wallet has no BNB for gas fee (or gas almost finished). Send some BNB to the hot wallet, then try again.'];
         }
-
         $dataBal = '0x70a08231' . str_pad(strtolower(preg_replace('/^0x/i', '', $from)), 64, '0', STR_PAD_LEFT);
         $tokenHex = null;
         foreach ($this->rpcs as $rpc) {
@@ -242,10 +209,7 @@ class BscTokenSender
         if ($tokenHex !== null) {
             $tokenBal = $this->hexToDecString($tokenHex);
             if ($this->decCmp($tokenBal, $amountWei) < 0) {
-                return [
-                    'ok' => false,
-                    'error' => 'Hot wallet token balance is too low for this payout. Add tokens to the hot wallet.',
-                ];
+                return ['ok' => false, 'error' => 'Hot wallet token balance is too low for this payout. Add tokens to the hot wallet.'];
             }
         }
         return ['ok' => true];
@@ -254,12 +218,10 @@ class BscTokenSender
     private function humanizeError(string $msg): string
     {
         $l = strtolower($msg);
-        if (str_contains($l, 'insufficient funds') || str_contains($l, 'insufficient balance')
-            || (str_contains($l, 'gas') && str_contains($l, 'fund'))) {
+        if (str_contains($l, 'insufficient funds') || str_contains($l, 'insufficient balance')) {
             return 'Hot wallet has no BNB for gas fee (or gas finished). Add BNB to hot wallet.';
         }
-        if (str_contains($l, 'transfer amount exceeds') || str_contains($l, 'exceeds balance')
-            || str_contains($l, 'erc20: transfer amount')) {
+        if (str_contains($l, 'transfer amount exceeds') || str_contains($l, 'exceeds balance')) {
             return 'Hot wallet token balance is too low for this payout.';
         }
         if (str_contains($l, 'execution reverted')) {
@@ -322,27 +284,26 @@ class BscTokenSender
 
     private function fetchGasPriceHex(): string
     {
-        $gas = '12a05f200';
+        $gas = '1dcd6500';
         foreach ($this->rpcs as $rpc) {
             $this->activeRpc = $rpc;
             try {
                 $gp = $this->rpcQuantity('eth_gasPrice', []);
                 if ($gp !== '0' && $gp !== '') {
-                    $gas = $this->hexMulPercent($gp, 150);
+                    $gas = $this->hexMulPercent($gp, 105);
                     break;
                 }
             } catch (Throwable $e) {
                 continue;
             }
         }
-        $gas = $this->hexMax($gas, '12a05f200');
         $gas = $this->hexMax($gas, '2faf080');
         return $gas;
     }
 
     private function estimateGasHex(string $from, string $data): string
     {
-        $limit = '30d40';
+        $limit = '186a0';
         foreach ($this->rpcs as $rpc) {
             $this->activeRpc = $rpc;
             try {
@@ -352,8 +313,11 @@ class BscTokenSender
                     'data' => $data,
                 ]]);
                 if ($est !== '0' && $est !== '') {
-                    $limit = $this->hexMulPercent($est, 160);
-                    $limit = $this->hexMax($limit, '186a0');
+                    $limit = $this->hexMulPercent($est, 110);
+                    $limit = $this->hexMax($limit, 'ea60');
+                    if (function_exists('gmp_init') && gmp_cmp(gmp_init($limit, 16), gmp_init('249f0', 16)) > 0) {
+                        $limit = '249f0';
+                    }
                     break;
                 }
             } catch (Throwable $e) {
@@ -449,13 +413,11 @@ class BscTokenSender
         $value = $this->quantityToRlpBin($tx['value']);
         $data = $tx['data'];
         $chainId = (int)$tx['chainId'];
-
         $unsigned = $this->rlpEncode([
             $nonce, $gasPrice, $gas,
             $this->hexToBin($to), $value, $this->hexToBin($data),
             $this->hexToBin(dechex($chainId)), '', '',
         ]);
-
         $hash = \kornrunner\Keccak::hash($unsigned, 256);
         $ec = new \Elliptic\EC('secp256k1');
         $key = $ec->keyFromPrivate($pkHex, 'hex');
@@ -464,7 +426,6 @@ class BscTokenSender
         $s = str_pad($sig->s->toString(16), 64, '0', STR_PAD_LEFT);
         $rec = $sig->recoveryParam ?? 0;
         $v = (int)$rec + $chainId * 2 + 35;
-
         $signed = $this->rlpEncode([
             $nonce, $gasPrice, $gas,
             $this->hexToBin($to), $value, $this->hexToBin($data),
@@ -571,12 +532,7 @@ class BscTokenSender
 
     private function rpcCall(string $method, array $params)
     {
-        $payload = json_encode([
-            'jsonrpc' => '2.0',
-            'id' => 1,
-            'method' => $method,
-            'params' => $params,
-        ]);
+        $payload = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => $method, 'params' => $params]);
         $ch = curl_init($this->activeRpc);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
@@ -599,9 +555,7 @@ class BscTokenSender
             throw new RuntimeException('RPC bad JSON HTTP ' . $code);
         }
         if (isset($data['error'])) {
-            $msg = is_array($data['error'])
-                ? ($data['error']['message'] ?? json_encode($data['error']))
-                : (string)$data['error'];
+            $msg = is_array($data['error']) ? ($data['error']['message'] ?? json_encode($data['error'])) : (string)$data['error'];
             throw new RuntimeException($msg);
         }
         return $data['result'] ?? null;
