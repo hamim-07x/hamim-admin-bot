@@ -52,8 +52,12 @@ class BscTokenSender
             if (!preg_match('/^0x[a-fA-F0-9]{40}$/', $toAddress)) {
                 return ['ok' => false, 'error' => 'Invalid recipient address'];
             }
-            if (!class_exists('\\Elliptic\\EC') || !class_exists('\\kornrunner\\Keccak')) {
-                return ['ok' => false, 'error' => 'Crypto libs missing (composer install required)'];
+            $vendor = dirname(__DIR__) . '/vendor/autoload.php';
+            if (is_file($vendor)) {
+                require_once $vendor;
+            }
+            if (!class_exists('Elliptic\\EC') || !class_exists('kornrunner\\Keccak')) {
+                return ['ok' => false, 'error' => 'Crypto libs missing (composer install required - redeploy Railway)'];
             }
 
             $from = $this->addressFromPrivateKey($this->privateKey);
