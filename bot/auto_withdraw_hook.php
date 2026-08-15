@@ -45,11 +45,11 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
     }
 
     $waitSec = random_int(5, 10);
-    $text  = ce('ce_payout_ok') . " <b>Payout request submitted</b>\n\n";
-    $text .= ce('ce_balance') . " Amount: <b>{$amtShow} {$c}</b>\n";
-    $text .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-    $text .= ce('ce_receipt') . " Status: <b>Processing</b>\n";
-    $text .= ce('ce_warn') . ' Processing will take a <b>few seconds</b>. Please wait…';
+    $text  = "🎟 <b>Payout request submitted</b>\n\n";
+    $text .= "💵 Amount: <b>{$amtShow} {$c}</b>\n";
+    $text .= "💳 Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
+    $text .= "🧾 Status: <b>Processing</b>\n";
+    $text .= '⏳ Processing will take a <b>few seconds</b>. Please wait…';
     botSend($bot, $chatId, $userId, $text, 'img_payout', [
         'reply_markup' => TelegramBot::removeKeyboard(),
     ]);
@@ -63,19 +63,19 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
     ]);
 
     if (!empty($result['ok'])) {
-        $ok  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
-        $ok .= ce('ce_balance') . " Amount: <b>{$amtShow} {$c}</b>\n";
-        $ok .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-        $ok .= ce('ce_receipt') . ' Status: <b>APPROVED</b>';
+        $ok  = "🎟 <b>Payout successful</b>\n\n";
+        $ok .= "💵 Amount: <b>{$amtShow} {$c}</b>\n";
+        $ok .= "💳 Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
+        $ok .= '🧾 Status: <b>COMPLETE</b> ✅';
         if (!empty($result['tx'])) {
-            $ok .= "\n" . ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($result['tx']) . '</code>';
+            $ok .= "\n\n🔗 Transaction:\n<code>" . htmlspecialchars($result['tx']) . '</code>';
         }
         botSend($bot, $chatId, $userId, $ok, 'img_payout', [
             'reply_markup' => viewPaymentChannelMarkup(),
         ]);
     } else {
-        $err  = ce('ce_payout_no') . " <b>Could not complete</b>\n\n";
-        $err .= ce('ce_warn') . ' ' . htmlspecialchars($result['error'] ?? 'pending review');
+        $err  = "❌ <b>Could not complete</b>\n\n";
+        $err .= '⚠️ ' . htmlspecialchars($result['error'] ?? 'pending review');
         botSend($bot, $chatId, $userId, $err, 'img_payout', [
             'reply_markup' => viewPaymentChannelMarkup(),
         ]);
