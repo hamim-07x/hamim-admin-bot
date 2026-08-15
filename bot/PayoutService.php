@@ -1,9 +1,6 @@
 <?php
 /**
- * Complete withdrawal:
- * - Manual (Demo OFF + Auto OFF): admin approves → notify user + channel
- * - BSC + Demo OFF → real on-chain
- * - Demo ON or TON/GRAM → soft complete + same notifications
+ * Complete withdrawal + notify (user premium emoji, channel plain unicode)
  */
 require_once __DIR__ . '/BscTokenSender.php';
 require_once __DIR__ . '/PaymentNetwork.php';
@@ -134,13 +131,14 @@ class PayoutService
             $payChannelRaw = trim((string)getSetting('notify_channel', ''));
         }
 
+        // Private chat: premium custom emoji (tg-emoji)
         if ($notifyUser && getSetting('user_payout_alert', '1') === '1') {
-            $html  = "🎟 <b>Payout successful</b>\n\n";
-            $html .= "💵 Amount: <b>{$s}{$amount} {$c}</b>\n";
-            $html .= "💳 Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-            $html .= "🧾 Status: <b>COMPLETE</b> ✅";
+            $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
+            $html .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
+            $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
+            $html .= ce('ce_receipt') . ' Status: <b>COMPLETE</b> ✅';
             if ($txHash !== '') {
-                $html .= "\n\n🔗 Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
+                $html .= "\n\n" . ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
             }
             $extra = [
                 'parse_mode' => 'HTML',
@@ -154,6 +152,8 @@ class PayoutService
             }
         }
 
+        // Channel: plain unicode (channel owner may not have Premium)
+        // Order: title → User ID → Amount → Status → Address → TX
         if ($notifyChannel && $payChannelRaw !== '') {
             $chat = $payChannelRaw;
             if (!str_starts_with($chat, '@') && !str_starts_with($chat, '-') && preg_match('/^\d+$/', $chat)) {
@@ -166,9 +166,9 @@ class PayoutService
                 '',
                 '👤 User ID: <code>' . $userId . '</code>',
                 '💵 Amount: <b>' . $s . $amount . ' ' . $c . '</b>',
+                '🧾 Status: <b>COMPLETE</b> ✅',
                 '💳 Address:',
                 '<code>' . htmlspecialchars($address) . '</code>',
-                '🧾 Status: <b>COMPLETE</b> ✅',
             ];
             if ($txHash !== '') {
                 $lines[] = '';
