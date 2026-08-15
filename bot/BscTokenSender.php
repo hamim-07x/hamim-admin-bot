@@ -1,7 +1,6 @@
 <?php
 /**
- * BEP-20 (BSC) ERC-20 token transfer from hot wallet private key.
- * Requires: kornrunner/keccak, simplito/elliptic-php (composer).
+ * BEP-20 (BSC) token transfer from hot wallet private key.
  */
 class BscTokenSender
 {
@@ -20,7 +19,7 @@ class BscTokenSender
     ) {
         $this->rpc = rtrim($rpcUrl, '/');
         $pk = preg_replace('/^0x/i', '', trim($privateKeyHex));
-        $this->privateKey = $pk;
+        $this->privateKey = strtolower($pk);
         $this->contract = strtolower(trim($tokenContract));
         $this->chainId = $chainId;
         $this->decimals = $decimals;
@@ -28,12 +27,18 @@ class BscTokenSender
 
     public static function fromSettings(): ?self
     {
-        $rpc = trim((string)getSetting('rpc_url', ''));
+        $rpc = trim((string)getSetting('rpc_url', 'https://bsc-dataseed.binance.org/'));
+        if ($rpc === '') {
+            $rpc = 'https://bsc-dataseed.binance.org/';
+        }
         $pk  = trim((string)getSetting('hot_wallet_private_key', ''));
         $ct  = trim((string)getSetting('usdt_contract', '0x55d398326f99059fF775485246999027B3197955'));
         $chainId = (int)getSetting('chain_id', '56');
         $decimals = (int)getSetting('token_decimals', '18');
-        if ($rpc === '' || $pk === '' || $ct === '') {
+        if ($pk === '' || $ct === '') {
+            return null;
+        }
+        if (!preg_match('/^[a-fA-F0-9]{64}$/', preg_replace('/^0x/i', '', $pk))) {
             return null;
         }
         if ($chainId <= 0) {
@@ -49,6 +54,7 @@ class BscTokenSender
     public function transfer(string $toAddress, string $amountHuman): array
     {
         try {
+            $toAddress = trim($toAddress);
             if (!preg_match('/^0x[a-fA-F0-9]{40}$/', $toAddress)) {
                 return ['ok' => false, 'error' => 'Invalid recipient address'];
             }
@@ -57,23 +63,40 @@ class BscTokenSender
                 require_once $vendor;
             }
             if (!class_exists('Elliptic\\EC') || !class_exists('kornrunner\\Keccak')) {
-                return ['ok' => false, 'error' => 'Crypto libs missing (composer install required - redeploy Railway)'];
+                return ['ok' => false, 'error' => 'Crypto libs missing (composer install / redeploy)'];
             }
 
             $from = $this->addressFromPrivateKey($this->privateKey);
             $amountWei = $this->toTokenUnits($amountHuman, $this->decimals);
+            if ($amountWei === '0') {
+                return ['ok' => false, 'error' => 'Amount is zero'];
+            }
             $data = $this->encodeTransfer($toAddress, $amountWei);
-            $nonce = $this->rpcInt('eth_getTransactionCount', [$from, 'pending']);
-            $gasPrice = $this->rpcInt('eth_gasPrice', []);
-            $gasPrice = intdiv($gasPrice * 110, 100);
-            $gasLimit = 100000;
+
+            $nonceHex = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
+            $gasPriceHex = $this->rpcQuantity('eth_gasPrice', []);
+            $gasPriceHex = $this->hexMulPercent($gasPriceHex, 115);
+            $gasLimitHex = '186a0';
+
+            try {
+                $est = $this->rpcQuantity('eth_estimateGas', [[
+                    'from' => $from,
+                    'to' => $this->contract,
+                    'data' => $data,
+                ]]);
+                if ($est !== '0' && $est !== '') {
+                    $gasLimitHex = $this->hexMulPercent($est, 130);
+                }
+            } catch (Throwable $e) {
+                error_log('[BSC] estimateGas: ' . $e->getMessage());
+            }
 
             $tx = [
-                'nonce' => $nonce,
-                'gasPrice' => $gasPrice,
-                'gas' => $gasLimit,
+                'nonce' => $nonceHex,
+                'gasPrice' => $gasPriceHex,
+                'gas' => $gasLimitHex,
                 'to' => $this->contract,
-                'value' => 0,
+                'value' => '0',
                 'data' => $data,
                 'chainId' => $this->chainId,
             ];
@@ -81,7 +104,7 @@ class BscTokenSender
             $raw = $this->signTransaction($tx, $this->privateKey);
             $txHash = $this->rpcString('eth_sendRawTransaction', [$raw]);
             if ($txHash === '' || !str_starts_with($txHash, '0x')) {
-                return ['ok' => false, 'error' => 'RPC rejected transaction'];
+                return ['ok' => false, 'error' => 'RPC rejected transaction (check BNB for gas + token balance)'];
             }
             return ['ok' => true, 'tx' => $txHash];
         } catch (Throwable $e) {
@@ -92,8 +115,11 @@ class BscTokenSender
     private function toTokenUnits(string $amount, int $decimals): string
     {
         $amount = trim($amount);
+        if (stripos($amount, 'e') !== false) {
+            $amount = sprintf('%.18f', (float)$amount);
+        }
         if (!preg_match('/^\d+(\.\d+)?$/', $amount)) {
-            throw new RuntimeException('Invalid amount');
+            throw new RuntimeException('Invalid amount: ' . $amount);
         }
         [$i, $f] = array_pad(explode('.', $amount, 2), 2, '');
         $f = substr(str_pad($f, $decimals, '0'), 0, $decimals);
@@ -112,22 +138,23 @@ class BscTokenSender
     {
         if (function_exists('gmp_init')) {
             $h = gmp_strval(gmp_init($dec, 10), 16);
-        } else {
+        } elseif (function_exists('bccomp')) {
             $h = '';
             $n = $dec;
-            if (!function_exists('bccomp')) {
-                $h = dechex((int)$dec);
-            } else {
-                while (bccomp($n, '0') > 0) {
-                    $h = dechex((int)bcmod($n, '16')) . $h;
-                    $n = bcdiv($n, '16', 0);
-                }
+            while (bccomp($n, '0') > 0) {
+                $h = dechex((int)bcmod($n, '16')) . $h;
+                $n = bcdiv($n, '16', 0);
             }
             if ($h === '') {
                 $h = '0';
             }
+        } else {
+            $h = dechex((int)$dec);
         }
-        return str_pad($h, $pad, '0', STR_PAD_LEFT);
+        if ($pad > 0) {
+            return str_pad($h, $pad, '0', STR_PAD_LEFT);
+        }
+        return $h === '' ? '0' : $h;
     }
 
     private function addressFromPrivateKey(string $pkHex): string
@@ -144,20 +171,20 @@ class BscTokenSender
 
     private function signTransaction(array $tx, string $pkHex): string
     {
-        $nonce = $this->intToHex($tx['nonce']);
-        $gasPrice = $this->intToHex($tx['gasPrice']);
-        $gas = $this->intToHex($tx['gas']);
+        $nonce = $this->quantityToRlpBin($tx['nonce']);
+        $gasPrice = $this->quantityToRlpBin($tx['gasPrice']);
+        $gas = $this->quantityToRlpBin($tx['gas']);
         $to = strtolower($tx['to']);
-        $value = $this->intToHex($tx['value']);
+        $value = $this->quantityToRlpBin($tx['value']);
         $data = $tx['data'];
         $chainId = (int)$tx['chainId'];
 
         $unsigned = $this->rlpEncode([
-            $this->hexToBin($nonce),
-            $this->hexToBin($gasPrice),
-            $this->hexToBin($gas),
+            $nonce,
+            $gasPrice,
+            $gas,
             $this->hexToBin($to),
-            $this->hexToBin($value),
+            $value,
             $this->hexToBin($data),
             $this->hexToBin(dechex($chainId)),
             '',
@@ -170,14 +197,18 @@ class BscTokenSender
         $sig = $key->sign($hash, ['canonical' => true]);
         $r = str_pad($sig->r->toString(16), 64, '0', STR_PAD_LEFT);
         $s = str_pad($sig->s->toString(16), 64, '0', STR_PAD_LEFT);
-        $v = $sig->recoveryParam + $chainId * 2 + 35;
+        $rec = $sig->recoveryParam;
+        if ($rec === null) {
+            $rec = 0;
+        }
+        $v = (int)$rec + $chainId * 2 + 35;
 
         $signed = $this->rlpEncode([
-            $this->hexToBin($nonce),
-            $this->hexToBin($gasPrice),
-            $this->hexToBin($gas),
+            $nonce,
+            $gasPrice,
+            $gas,
             $this->hexToBin($to),
-            $this->hexToBin($value),
+            $value,
             $this->hexToBin($data),
             $this->hexToBin(dechex($v)),
             hex2bin($r),
@@ -187,16 +218,46 @@ class BscTokenSender
         return '0x' . bin2hex($signed);
     }
 
-    private function intToHex(int|string $n): string
+    private function quantityToRlpBin(string $q): string
     {
-        $h = is_int($n) ? dechex($n) : dechex((int)$n);
-        if ($h === '0') {
-            return '0x0';
+        $q = trim($q);
+        if ($q === '' || $q === '0' || $q === '0x' || $q === '0x0') {
+            return '';
         }
-        if (strlen($h) % 2 === 1) {
-            $h = '0' . $h;
+        if (str_starts_with($q, '0x') || str_starts_with($q, '0X')) {
+            $hex = preg_replace('/^0x/i', '', $q);
+        } elseif (ctype_digit($q)) {
+            $hex = $this->decToHexPad($q, 0);
+            $hex = ltrim($hex, '0');
+            if ($hex === '') {
+                return '';
+            }
+        } else {
+            $hex = preg_replace('/^0x/i', '', $q);
         }
-        return '0x' . $h;
+        $hex = ltrim($hex, '0');
+        if ($hex === '') {
+            return '';
+        }
+        if (strlen($hex) % 2) {
+            $hex = '0' . $hex;
+        }
+        return hex2bin($hex) ?: '';
+    }
+
+    private function hexMulPercent(string $hexQty, int $percent): string
+    {
+        $hex = preg_replace('/^0x/i', '', $hexQty);
+        if ($hex === '' || $hex === '0') {
+            return '0';
+        }
+        if (function_exists('gmp_init')) {
+            $n = gmp_init($hex, 16);
+            $n = gmp_div(gmp_mul($n, (string)$percent), '100');
+            return gmp_strval($n, 16);
+        }
+        $v = (int)hexdec($hex);
+        return dechex((int)floor($v * $percent / 100));
     }
 
     private function hexToBin(string $hex): string
@@ -254,27 +315,29 @@ class BscTokenSender
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_TIMEOUT => 30,
+            CURLOPT_TIMEOUT => 45,
         ]);
         $res = curl_exec($ch);
+        $err = curl_error($ch);
         curl_close($ch);
         if ($res === false) {
-            throw new RuntimeException('RPC connection failed');
+            throw new RuntimeException('RPC connection failed: ' . $err);
         }
         $data = json_decode($res, true);
         if (isset($data['error'])) {
-            throw new RuntimeException($data['error']['message'] ?? 'RPC error');
+            $msg = $data['error']['message'] ?? 'RPC error';
+            throw new RuntimeException($msg);
         }
         return $data['result'] ?? null;
     }
 
-    private function rpcInt(string $method, array $params): int
+    private function rpcQuantity(string $method, array $params): string
     {
         $r = $this->rpc($method, $params);
-        if (!is_string($r)) {
-            return 0;
+        if (!is_string($r) || $r === '' || $r === '0x') {
+            return '0';
         }
-        return (int)hexdec($r);
+        return preg_replace('/^0x/i', '', $r) ?: '0';
     }
 
     private function rpcString(string $method, array $params): string
