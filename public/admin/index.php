@@ -235,11 +235,11 @@ $cName = getSetting('currency_name', 'USDT');
         $st->execute([(int)$q]); $rows = $st->fetchAll();
       } else {
         $like = '%' . ltrim($q, '@') . '%';
-        $st = $db->prepare('SELECT id, username, first_name, last_name, balance, is_blocked, created_at FROM users WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ? ORDER BY created_at ASC LIMIT 200');
+        $st = $db->prepare('SELECT id, username, first_name, last_name, balance, is_blocked, created_at FROM users WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ? ORDER BY created_at DESC LIMIT 200');
         $st->execute([$like, $like, $like]); $rows = $st->fetchAll();
       }
     } else {
-      $rows = $db->query('SELECT id, username, first_name, last_name, balance, is_blocked, created_at FROM users ORDER BY created_at ASC LIMIT 300')->fetchAll();
+      $rows = $db->query('SELECT id, username, first_name, last_name, balance, is_blocked, created_at FROM users ORDER BY created_at DESC LIMIT 300')->fetchAll();
     }
     $serialMap = [];
     try {
@@ -252,11 +252,18 @@ $cName = getSetting('currency_name', 'USDT');
       $handle = $u['username'] ? '@' . $u['username'] : '—';
       $serial = $serialMap[(int)$u['id']] ?? '—';
       $refStmt->execute([(int)$u['id']]); $refs = (int)$refStmt->fetchColumn();
+      $balRaw = (float)$u['balance'];
+      if (abs($balRaw) < 0.00000001) {
+          $balShow = '0';
+      } else {
+          $balShow = rtrim(rtrim(number_format($balRaw, 8, '.', ''), '0'), '.');
+          if ($balShow === '' || $balShow === '-') { $balShow = '0'; }
+      }
     ?>
     <tr>
       <td><b><?= (int)$serial ?></b></td>
       <td><div class="user-name"><?= htmlspecialchars($uname) ?></div><div class="user-meta"><?= htmlspecialchars($handle) ?> · ID <?= (int)$u['id'] ?></div></td>
-      <td><b><?= htmlspecialchars(number_format((float)$u['balance'], 4)) ?></b></td>
+      <td><b><?= htmlspecialchars($balShow) ?></b></td>
       <td><b><?= $refs ?></b></td>
       <td><?= (int)$u['is_blocked'] ? '<span class="badge bad">Blocked</span>' : '<span class="badge ok">Active</span>' ?></td>
       <td><form method="post" action="/admin/user_action.php" class="inline-form">
