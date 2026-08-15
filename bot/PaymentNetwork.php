@@ -1,5 +1,5 @@
 <?php
-/** Active payout network: bsc | ton */
+/** Active payout network: bsc | ton  (TON = Gram / former Toncoin — same network) */
 function activePaymentNetwork(): string
 {
     $n = strtolower(trim((string)getSetting('active_payment_network', 'bsc')));
@@ -8,7 +8,7 @@ function activePaymentNetwork(): string
 
 function paymentNetworkLabel(): string
 {
-    return activePaymentNetwork() === 'ton' ? 'TON (Gram)' : 'BEP-20 (BSC)';
+    return activePaymentNetwork() === 'ton' ? 'TON / GRAM' : 'BEP-20 (BSC)';
 }
 
 function isValidPayoutAddress(string $address): bool
@@ -29,7 +29,7 @@ function isValidPayoutAddress(string $address): bool
 function payoutAddressHint(): string
 {
     if (activePaymentNetwork() === 'ton') {
-        return 'TON wallet (EQ… / UQ…)';
+        return 'TON / GRAM wallet (EQ… / UQ…)';
     }
     return 'BSC wallet (0x…)';
 }
