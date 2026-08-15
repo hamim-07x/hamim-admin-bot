@@ -1,6 +1,6 @@
 <?php
 /**
- * BEP-20 (BSC) transfer — fast multi-RPC failover, gas floor, nonce retry.
+ * BEP-20 (BSC) transfer — robust nonce + treat "already known" as success.
  */
 class BscTokenSender
 {
@@ -25,7 +25,6 @@ class BscTokenSender
                 $list[] = $u;
             }
         }
-        // Fast public BSC endpoints first (avoid slow/timeout-prone nodes)
         foreach ([
             'https://bsc-dataseed.binance.org',
             'https://bsc-dataseed1.binance.org',
@@ -35,7 +34,6 @@ class BscTokenSender
             'https://bsc-dataseed1.defibit.io',
             'https://bsc-dataseed1.ninicoin.io',
             'https://1rpc.io/bnb',
-            'https://rpc.ankr.com/bsc',
         ] as $fb) {
             if (!in_array($fb, $list, true)) {
                 $list[] = $fb;
@@ -92,89 +90,114 @@ class BscTokenSender
             }
             $data = $this->encodeTransfer($toAddress, $amountWei);
 
+            // Cross-RPC max nonce (avoids stale 27 when chain is at 39)
+            $nonceDec = $this->fetchMaxNonceDecimal($from);
+            $gasPriceHex = $this->fetchGasPriceHex();
+            $gasLimitHex = $this->estimateGasHex($from, $data);
+
             $lastErr = '';
             $errors = [];
 
-            foreach ($this->rpcs as $rpc) {
-                $this->activeRpc = $rpc;
-                try {
-                    // Fixed high gas — skip fragile estimate when possible; still try estimate
-                    $gasPriceHex = '12a05f200'; // 5 gwei default floor
+            // Up to 8 nonce attempts across RPCs
+            for ($attempt = 0; $attempt < 8; $attempt++) {
+                $nonceHex = $this->decToHexPad((string)$nonceDec, 0);
+                $nonceHex = ltrim($nonceHex, '0') ?: '0';
+
+                $tx = [
+                    'nonce' => $nonceHex,
+                    'gasPrice' => $gasPriceHex,
+                    'gas' => $gasLimitHex,
+                    'to' => $this->contract,
+                    'value' => '0',
+                    'data' => $data,
+                    'chainId' => $this->chainId,
+                ];
+                $raw = $this->signTransaction($tx, $this->privateKey);
+
+                foreach ($this->rpcs as $rpc) {
+                    $this->activeRpc = $rpc;
                     try {
-                        $gp = $this->rpcQuantity('eth_gasPrice', []);
-                        if ($gp !== '0' && $gp !== '') {
-                            $gasPriceHex = $this->hexMulPercent($gp, 150);
+                        $txHash = $this->rpcCall('eth_sendRawTransaction', [$raw]);
+                        if (is_string($txHash) && preg_match('/^0x[a-fA-F0-9]{64}$/', $txHash)) {
+                            return ['ok' => true, 'tx' => $txHash, 'from' => $from];
                         }
+                        $lastErr = 'invalid tx hash from RPC';
                     } catch (Throwable $e) {
-                        // keep floor
-                    }
-                    $gasPriceHex = $this->hexMax($gasPriceHex, '12a05f200'); // 5 gwei
-                    $gasPriceHex = $this->hexMax($gasPriceHex, '2faf080');    // 50m wei
-                    $gasPriceHex = $this->hexMax($gasPriceHex, '3b9aca00');  // 1 gwei min safety → actually 1e9=3b9aca00
+                        $msg = $e->getMessage();
+                        $lastErr = $msg;
+                        $host = parse_url($rpc, PHP_URL_HOST) ?: $rpc;
 
-                    $gasLimitHex = '30d40'; // 200000
-                    try {
-                        $est = $this->rpcQuantity('eth_estimateGas', [[
-                            'from' => $from,
-                            'to' => $this->contract,
-                            'data' => $data,
-                        ]]);
-                        if ($est !== '0' && $est !== '') {
-                            $gasLimitHex = $this->hexMulPercent($est, 160);
-                            $gasLimitHex = $this->hexMax($gasLimitHex, '186a0');
+                        // TX already in mempool/chain = SUCCESS
+                        if (stripos($msg, 'already known') !== false
+                            || stripos($msg, 'known transaction') !== false
+                            || stripos($msg, 'already imported') !== false) {
+                            if (preg_match('/(0x[a-fA-F0-9]{64})/', $msg, $hm)) {
+                                return ['ok' => true, 'tx' => $hm[1], 'from' => $from];
+                            }
+                            // Hash not in message — compute from signed raw
+                            $computed = '0x' . \kornrunner\Keccak::hash(hex2bin(substr($raw, 2)), 256);
+                            return ['ok' => true, 'tx' => $computed, 'from' => $from];
                         }
-                    } catch (Throwable $e) {
-                        // continue with default gas limit
-                    }
 
-                    $nonceHex = $this->fetchNonceHex($from);
-
-                    for ($attempt = 0; $attempt < 5; $attempt++) {
-                        try {
-                            $tx = [
-                                'nonce' => $nonceHex,
-                                'gasPrice' => $gasPriceHex,
-                                'gas' => $gasLimitHex,
-                                'to' => $this->contract,
-                                'value' => '0',
-                                'data' => $data,
-                                'chainId' => $this->chainId,
-                            ];
-                            $raw = $this->signTransaction($tx, $this->privateKey);
-                            $txHash = $this->rpcCall('eth_sendRawTransaction', [$raw]);
-                            if (is_string($txHash) && str_starts_with($txHash, '0x') && strlen($txHash) >= 66) {
-                                return ['ok' => true, 'tx' => $txHash, 'from' => $from];
+                        // Nonce too low — use chain's next nonce (decimal)
+                        if (preg_match('/next nonce[:\s]+(\d+)/i', $msg, $m)
+                            || preg_match('/nonce too low.*?(\d+)/i', $msg, $m)) {
+                            $next = (int)$m[1];
+                            // Prefer explicit "next nonce N"
+                            if (preg_match('/next nonce[:\s]+(\d+)/i', $msg, $m2)) {
+                                $next = (int)$m2[1];
                             }
-                            $lastErr = 'RPC returned invalid tx hash';
-                            break;
-                        } catch (Throwable $e) {
-                            $msg = $e->getMessage();
-                            $lastErr = $msg;
-                            if (preg_match('/next nonce\s*(\d+)/i', $msg, $m)) {
-                                $nonceHex = ltrim($this->decToHexPad($m[1], 0), '0') ?: '0';
-                                usleep(200000);
-                                continue;
+                            if ($next > $nonceDec) {
+                                $nonceDec = $next;
+                                $errors[] = "$host: nonce→$next";
+                                break; // re-sign with new nonce
                             }
-                            if (stripos($msg, 'nonce too low') !== false || stripos($msg, 'already known') !== false) {
-                                usleep(250000);
-                                $nonceHex = $this->fetchNonceHex($from);
-                                continue;
-                            }
-                            // connection / underpriced → next RPC
+                            $nonceDec++;
                             break;
                         }
+
+                        if (stripos($msg, 'nonce too high') !== false) {
+                            $nonceDec = $this->fetchMaxNonceDecimal($from);
+                            break;
+                        }
+
+                        if (stripos($msg, 'replacement transaction underpriced') !== false
+                            || stripos($msg, 'underpriced') !== false) {
+                            $gasPriceHex = $this->hexMulPercent($gasPriceHex, 120);
+                            $gasPriceHex = $this->hexMax($gasPriceHex, '12a05f200');
+                            break; // re-sign higher gas
+                        }
+
+                        // Timeout / auth / connection → try next RPC same signed tx
+                        if (stripos($msg, 'timeout') !== false
+                            || stripos($msg, 'Unauthorized') !== false
+                            || stripos($msg, 'RPC') !== false
+                            || stripos($msg, 'empty') !== false) {
+                            $errors[] = "$host: skip";
+                            continue;
+                        }
+
+                        $errors[] = "$host: $msg";
+                        continue;
                     }
-                    $errors[] = basename(parse_url($rpc, PHP_URL_HOST) ?: $rpc) . ': ' . $lastErr;
-                } catch (Throwable $e) {
-                    $lastErr = $e->getMessage();
-                    $errors[] = basename(parse_url($rpc, PHP_URL_HOST) ?: $rpc) . ': ' . $lastErr;
-                    continue;
+                }
+
+                // If we exhausted RPCs without break for nonce update, stop looping same nonce forever
+                if ($attempt >= 2 && $nonceDec === (int)($nonceDec)) {
+                    // refresh from network once
+                    $fresh = $this->fetchMaxNonceDecimal($from);
+                    if ($fresh > $nonceDec) {
+                        $nonceDec = $fresh;
+                    }
                 }
             }
 
             $summary = $lastErr;
             if ($errors) {
-                $summary = implode(' | ', array_slice($errors, -3));
+                $summary = implode(' | ', array_slice($errors, -4));
+                if ($lastErr !== '') {
+                    $summary .= ' | ' . $lastErr;
+                }
             }
             return [
                 'ok' => false,
@@ -186,19 +209,80 @@ class BscTokenSender
         }
     }
 
-    private function fetchNonceHex(string $from): string
+    /** Max nonce across several RPCs (decimal). */
+    private function fetchMaxNonceDecimal(string $from): int
     {
-        $pending = '0';
-        $latest = '0';
-        try {
-            $pending = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
-        } catch (Throwable $e) {
+        $max = 0;
+        $tried = 0;
+        foreach ($this->rpcs as $rpc) {
+            if ($tried >= 5) {
+                break;
+            }
+            $this->activeRpc = $rpc;
+            $tried++;
+            try {
+                $p = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
+                $l = $this->rpcQuantity('eth_getTransactionCount', [$from, 'latest']);
+                $pd = $this->hexToDecInt($p);
+                $ld = $this->hexToDecInt($l);
+                $max = max($max, $pd, $ld);
+            } catch (Throwable $e) {
+                continue;
+            }
         }
-        try {
-            $latest = $this->rpcQuantity('eth_getTransactionCount', [$from, 'latest']);
-        } catch (Throwable $e) {
+        return $max;
+    }
+
+    private function fetchGasPriceHex(): string
+    {
+        $gas = '12a05f200'; // 5 gwei
+        foreach ($this->rpcs as $rpc) {
+            $this->activeRpc = $rpc;
+            try {
+                $gp = $this->rpcQuantity('eth_gasPrice', []);
+                if ($gp !== '0' && $gp !== '') {
+                    $gas = $this->hexMulPercent($gp, 150);
+                    break;
+                }
+            } catch (Throwable $e) {
+                continue;
+            }
         }
-        return $this->hexMax($pending, $latest);
+        $gas = $this->hexMax($gas, '12a05f200');
+        $gas = $this->hexMax($gas, '2faf080'); // 50_000_000 wei floor
+        return $gas;
+    }
+
+    private function estimateGasHex(string $from, string $data): string
+    {
+        $limit = '30d40'; // 200000
+        foreach ($this->rpcs as $rpc) {
+            $this->activeRpc = $rpc;
+            try {
+                $est = $this->rpcQuantity('eth_estimateGas', [[
+                    'from' => $from,
+                    'to' => $this->contract,
+                    'data' => $data,
+                ]]);
+                if ($est !== '0' && $est !== '') {
+                    $limit = $this->hexMulPercent($est, 160);
+                    $limit = $this->hexMax($limit, '186a0');
+                    break;
+                }
+            } catch (Throwable $e) {
+                continue;
+            }
+        }
+        return $limit;
+    }
+
+    private function hexToDecInt(string $hex): int
+    {
+        $hex = preg_replace('/^0x/i', '', $hex) ?: '0';
+        if (function_exists('gmp_init')) {
+            return (int)gmp_strval(gmp_init($hex, 16), 10);
+        }
+        return (int)hexdec($hex);
     }
 
     private function loadCrypto(): void
@@ -415,7 +499,6 @@ class BscTokenSender
             CURLOPT_TIMEOUT => 8,
             CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_SSL_VERIFYPEER => true,
         ]);
         $res = curl_exec($ch);
         $err = curl_error($ch);
@@ -426,7 +509,7 @@ class BscTokenSender
         }
         $data = json_decode($res, true);
         if (!is_array($data)) {
-            throw new RuntimeException('RPC bad JSON (' . $this->activeRpc . ') HTTP ' . $code);
+            throw new RuntimeException('RPC bad JSON HTTP ' . $code);
         }
         if (isset($data['error'])) {
             $msg = is_array($data['error'])
