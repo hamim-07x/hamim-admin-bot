@@ -1,9 +1,9 @@
 <?php
 /**
  * Complete withdrawal:
+ * - Manual (Demo OFF + Auto OFF): admin approves → notify user + channel
  * - BSC + Demo OFF → real on-chain
- * - BSC + Demo ON  → fake tx + notifications
- * - TON/GRAM        → always soft complete (demo-style), no on-chain
+ * - Demo ON or TON/GRAM → soft complete + same notifications
  */
 require_once __DIR__ . '/BscTokenSender.php';
 require_once __DIR__ . '/PaymentNetwork.php';
@@ -135,12 +135,12 @@ class PayoutService
         }
 
         if ($notifyUser && getSetting('user_payout_alert', '1') === '1') {
-            $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
-            $html .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
-            $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-            $html .= ce('ce_receipt') . " Status: <b>APPROVED</b>\n";
+            $html  = "✅ <b>Payout successful</b>\n\n";
+            $html .= "💵 Amount: <b>{$s}{$amount} {$c}</b>\n";
+            $html .= "💳 Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
+            $html .= "✅ Status: <b>COMPLETE</b>";
             if ($txHash !== '') {
-                $html .= ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
+                $html .= "\n🔗 Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
             }
             $extra = [
                 'parse_mode' => 'HTML',
@@ -161,6 +161,7 @@ class PayoutService
             } elseif (!str_starts_with($chat, '@') && !str_starts_with($chat, '-')) {
                 $chat = '@' . ltrim($chat, '@');
             }
+            // Plain unicode emojis — works in public channels (no custom emoji / broken receipt glyph)
             $lines = [
                 '🎟 <b>New Payout successfully Paid</b>',
                 '',
@@ -168,7 +169,7 @@ class PayoutService
                 '💵 Amount: <b>' . $s . $amount . ' ' . $c . '</b>',
                 '💳 Address:',
                 '<code>' . htmlspecialchars($address) . '</code>',
-                '🧾 Status: <b>COMPLETE</b>',
+                '✅ Status: <b>COMPLETE</b>',
             ];
             if ($txHash !== '') {
                 $lines[] = '';
@@ -180,11 +181,7 @@ class PayoutService
             $botUser = ltrim((string)getSetting('bot_username', ''), '@');
             if ($botUser !== '') {
                 $btnText = trim((string)getSetting('notify_btn_text', 'Start Bot')) ?: 'Start Bot';
-                $btnIcon = preg_replace('/\D+/', '', (string)getSetting('notify_btn_emoji_id', '5416041192905265756'));
                 $btn = ['text' => $btnText, 'url' => 'https://t.me/' . $botUser . '?start=1'];
-                if (strlen($btnIcon) >= 8) {
-                    $btn['icon_custom_emoji_id'] = $btnIcon;
-                }
                 $extra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
             }
             if ($successPhoto !== '') {
