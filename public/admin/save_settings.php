@@ -26,8 +26,46 @@ if ($form === 'payment_basic') {
     if (isset($_POST['payment_channel'])) {
         setSetting('notify_channel', trim((string)$_POST['payment_channel']));
     }
-    setSetting('network', 'BEP20');
     $_SESSION['flash'] = 'Basic payment settings saved.';
+    header('Location: /admin/?page=payment');
+    exit;
+}
+
+if ($form === 'payment_network') {
+    $net = strtolower(trim((string)($_POST['active_payment_network'] ?? 'bsc')));
+    if (!in_array($net, ['bsc', 'ton'], true)) {
+        $net = 'bsc';
+    }
+    setSetting('active_payment_network', $net);
+    setSetting('network', $net === 'ton' ? 'TON' : 'BEP20');
+    $_SESSION['flash'] = 'Active network: ' . strtoupper($net) . '. Withdrawals will use this network.';
+    header('Location: /admin/?page=payment');
+    exit;
+}
+
+if ($form === 'payment_wallet_bsc') {
+    saveKeys([
+        'hot_wallet_private_key',
+        'usdt_contract',
+        'rpc_url',
+        'chain_id',
+        'token_decimals',
+    ]);
+    $_SESSION['flash'] = 'BSC / BEP-20 wallet settings saved.';
+    header('Location: /admin/?page=payment');
+    exit;
+}
+
+if ($form === 'payment_wallet_ton') {
+    saveKeys([
+        'ton_mnemonic',
+        'ton_api_url',
+        'ton_api_key',
+        'ton_jetton_master',
+        'ton_payout_url',
+        'ton_payout_secret',
+    ]);
+    $_SESSION['flash'] = 'TON / Gram wallet settings saved.';
     header('Location: /admin/?page=payment');
     exit;
 }
@@ -40,8 +78,7 @@ if ($form === 'payment_wallet') {
         'chain_id',
         'token_decimals',
     ]);
-    setSetting('network', 'BEP20');
-    $_SESSION['flash'] = 'Auto-pay wallet settings saved.';
+    $_SESSION['flash'] = 'Wallet settings saved.';
     header('Location: /admin/?page=payment');
     exit;
 }
@@ -65,7 +102,7 @@ if ($form === 'payment_modes') {
         setSetting('demo_payment', '1');
         setSetting('withdraw_mode', 'manual');
         setSetting('auto_send_enabled', '0');
-        $_SESSION['flash'] = 'Demo payment ON. Auto-approve & Auto-send forced OFF. Fake TX + notifications only.';
+        $_SESSION['flash'] = 'Demo payment ON. Auto-approve & Auto-send forced OFF.';
     } else {
         setSetting('demo_payment', '0');
         if (array_key_exists('withdraw_mode', $_POST)) {
@@ -78,27 +115,6 @@ if ($form === 'payment_modes') {
         }
         $_SESSION['flash'] = 'Payment mode settings saved.';
     }
-    header('Location: /admin/?page=payment');
-    exit;
-}
-
-if ($form === 'payment') {
-    saveKeys([
-        'payment_channel', 'min_withdraw', 'user_payout_alert', 'withdraw_mode',
-        'hot_wallet_private_key', 'usdt_contract', 'rpc_url', 'referral_bonus',
-        'notify_btn_text', 'notify_btn_emoji_id', 'user_channel_btn_text',
-        'user_channel_btn_emoji_id', 'auto_send_enabled', 'chain_id', 'token_decimals',
-        'demo_payment',
-    ]);
-    setSetting('network', 'BEP20');
-    if (isset($_POST['payment_channel'])) {
-        setSetting('notify_channel', trim((string)$_POST['payment_channel']));
-    }
-    if (getSetting('demo_payment', '0') === '1') {
-        setSetting('withdraw_mode', 'manual');
-        setSetting('auto_send_enabled', '0');
-    }
-    $_SESSION['flash'] = 'Payment settings saved.';
     header('Location: /admin/?page=payment');
     exit;
 }
