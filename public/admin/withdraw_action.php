@@ -54,14 +54,19 @@ if ($action === 'reject') {
     exit;
 }
 
-$result = PayoutService::completeWithdrawal($id);
+$result = PayoutService::completeWithdrawal($id, null, [
+    'notify_user' => true,
+    'notify_channel' => true,
+    'from_admin' => true,
+]);
 if (!empty($result['ok'])) {
-    $_SESSION['flash'] = "Withdrawal #{$id} marked " . ($result['status'] ?? 'approved') . ". Notifications sent.";
+    $_SESSION['flash'] = "Withdrawal #{$id} PAID on-chain. Status: " . ($result['status'] ?? 'paid');
     if (!empty($result['tx'])) {
-        $_SESSION['flash'] .= ' TX: ' . $result['tx'];
+        $_SESSION['flash'] .= ' | TX: ' . $result['tx'];
     }
 } else {
-    $_SESSION['flash'] = "Withdrawal #{$id} failed: " . ($result['error'] ?? 'unknown');
+    $_SESSION['flash'] = "Withdrawal #{$id} FAILED (not marked paid): " . ($result['error'] ?? 'unknown')
+        . ' — Fix wallet settings / gas / balance then Approve again.';
 }
 header('Location: /admin/?page=withdrawals');
 exit;

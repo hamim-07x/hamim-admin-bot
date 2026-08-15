@@ -1,7 +1,6 @@
 <?php
 /**
- * Complete a pending withdrawal: optional on-chain send (BSC or TON) + notify.
- * Demo mode: fake tx hash + notifications, no on-chain send.
+ * Complete pending withdrawal: on-chain send (BSC/TON) when not demo + notify.
  */
 require_once __DIR__ . '/BscTokenSender.php';
 require_once __DIR__ . '/TonTokenSender.php';
@@ -10,7 +9,7 @@ require_once __DIR__ . '/PaymentNetwork.php';
 class PayoutService
 {
     /**
-     * @param array{notify_user?:bool,notify_channel?:bool} $opts
+     * @param array{notify_user?:bool,notify_channel?:bool,from_admin?:bool} $opts
      * @return array{ok:bool,tx?:string,error?:string,status?:string}
      */
     public static function completeWithdrawal(int $id, ?TelegramBot $bot = null, array $opts = []): array
@@ -30,26 +29,29 @@ class PayoutService
         }
 
         $amountRaw = (float)$w['amount'];
-        $address = (string)$w['address'];
+        $amountStr = rtrim(rtrim(sprintf('%.8f', $amountRaw), '0'), '.');
+        if ($amountStr === '' || $amountStr === '.') {
+            $amountStr = '0';
+        }
+        $address = trim((string)$w['address']);
 
         $demo = getSetting('demo_payment', '0') === '1';
-        $autoSend = !$demo && getSetting('auto_send_enabled', '0') === '1';
         $net = activePaymentNetwork();
 
         $txHash = '';
-        if ($autoSend) {
+        if (!$demo) {
             if ($net === 'ton') {
                 $sender = TonTokenSender::fromSettings();
                 if (!$sender) {
-                    return ['ok' => false, 'error' => 'TON wallet not configured'];
+                    return ['ok' => false, 'error' => 'TON/GRAM: paste 24-word seed in Payment Settings'];
                 }
-                $res = $sender->transfer($address, (string)$amountRaw);
+                $res = $sender->transfer($address, $amountStr);
             } else {
                 $sender = BscTokenSender::fromSettings();
                 if (!$sender) {
-                    return ['ok' => false, 'error' => 'BSC wallet/RPC not configured'];
+                    return ['ok' => false, 'error' => 'BSC: set hot wallet private key + contract in Payment Settings'];
                 }
-                $res = $sender->transfer($address, (string)$amountRaw);
+                $res = $sender->transfer($address, $amountStr);
             }
             if ($res['ok'] ?? false) {
                 $txHash = (string)($res['tx'] ?? '');
@@ -63,10 +65,7 @@ class PayoutService
             }
         }
 
-        $status = 'approved';
-        if ($demo || getSetting('withdraw_mode', 'manual') === 'auto' || ($autoSend && $txHash !== '')) {
-            $status = 'paid';
-        }
+        $status = 'paid';
 
         try {
             $cols = $db->query("SHOW COLUMNS FROM withdrawals LIKE 'tx_hash'")->fetch();
@@ -96,6 +95,19 @@ class PayoutService
         }
 
         return ['ok' => true, 'tx' => $txHash, 'status' => $status];
+    }
+
+    public static function payoutSuccessMarkup(): array
+    {
+        if (!function_exists('viewPaymentChannelMarkup')) {
+            require_once __DIR__ . '/auto_withdraw_hook.php';
+        }
+        if (function_exists('viewPaymentChannelMarkup')) {
+            return viewPaymentChannelMarkup();
+        }
+        return TelegramBot::inlineKeyboard([[
+            ['text' => 'Back', 'callback_data' => 'go_menu'],
+        ]]);
     }
 
     private static function sendNotifications(
@@ -135,21 +147,11 @@ class PayoutService
             if ($txHash !== '') {
                 $html .= ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
             }
-            $extra = ['parse_mode' => 'HTML', 'disable_web_page_preview' => true];
-            $ch = trim($payChannelRaw);
-            $channelLink = '';
-            if ($ch !== '' && !preg_match('/^-?\d+$/', $ch)) {
-                $channelLink = 'https://t.me/' . ltrim($ch, '@');
-            }
-            if ($channelLink !== '') {
-                $viewText = trim((string)getSetting('user_channel_btn_text', 'View Payment Channel')) ?: 'View Payment Channel';
-                $viewIcon = preg_replace('/\D+/', '', (string)getSetting('user_channel_btn_emoji_id', '5332455502917949981'));
-                $btn = ['text' => $viewText, 'url' => $channelLink];
-                if (strlen($viewIcon) >= 8) {
-                    $btn['icon_custom_emoji_id'] = $viewIcon;
-                }
-                $extra['reply_markup'] = ['inline_keyboard' => [[$btn]]];
-            }
+            $extra = [
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true,
+                'reply_markup' => self::payoutSuccessMarkup(),
+            ];
             if ($successPhoto !== '') {
                 $bot->sendPhoto($userId, $successPhoto, $html, $extra);
             } else {

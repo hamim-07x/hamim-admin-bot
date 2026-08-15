@@ -1,28 +1,33 @@
 <?php
 /**
- * Auto-approve or Demo:
- * processing → main menu while waiting → success with View Payment Channel only (no Back)
+ * Auto / Demo: processing wait → success with View Payment Channel + Back
  */
 function viewPaymentChannelMarkup(): array
 {
+    $rows = [];
     $payChannelRaw = trim((string)getSetting('payment_channel', ''));
     if ($payChannelRaw === '') {
         $payChannelRaw = trim((string)getSetting('notify_channel', ''));
     }
-    $channelLink = '';
     if ($payChannelRaw !== '' && !preg_match('/^-?\d+$/', $payChannelRaw)) {
         $channelLink = 'https://t.me/' . ltrim($payChannelRaw, '@');
+        $viewText = trim((string)getSetting('user_channel_btn_text', 'View Payment Channel')) ?: 'View Payment Channel';
+        $viewIcon = preg_replace('/\D+/', '', (string)getSetting('user_channel_btn_emoji_id', '5332455502917949981'));
+        $btn = ['text' => $viewText, 'url' => $channelLink];
+        if (strlen($viewIcon) >= 8) {
+            $btn['icon_custom_emoji_id'] = $viewIcon;
+        }
+        $rows[] = [$btn];
     }
-    if ($channelLink === '') {
-        return backInline();
+    $idBack = function_exists('btnEmojiId')
+        ? btnEmojiId('ce_btn_back', '5416041192905265756')
+        : '5416041192905265756';
+    $backBtn = ['text' => 'Back', 'callback_data' => 'go_menu'];
+    if (strlen($idBack) >= 8) {
+        $backBtn['icon_custom_emoji_id'] = $idBack;
     }
-    $viewText = trim((string)getSetting('user_channel_btn_text', 'View Payment Channel')) ?: 'View Payment Channel';
-    $viewIcon = preg_replace('/\D+/', '', (string)getSetting('user_channel_btn_emoji_id', '5332455502917949981'));
-    $btn = ['text' => $viewText, 'url' => $channelLink];
-    if (strlen($viewIcon) >= 8) {
-        $btn['icon_custom_emoji_id'] = $viewIcon;
-    }
-    return TelegramBot::inlineKeyboard([[$btn]]);
+    $rows[] = [$backBtn];
+    return TelegramBot::inlineKeyboard($rows);
 }
 
 function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, int $wdId, float $amount, string $address): bool
