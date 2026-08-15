@@ -1,9 +1,11 @@
 <?php
 /**
- * Complete a pending withdrawal: optional on-chain BEP-20 send + status + notify.
+ * Complete a pending withdrawal: optional on-chain send (BSC or TON) + notify.
  * Demo mode: fake tx hash + notifications, no on-chain send.
  */
 require_once __DIR__ . '/BscTokenSender.php';
+require_once __DIR__ . '/TonTokenSender.php';
+require_once __DIR__ . '/PaymentNetwork.php';
 
 class PayoutService
 {
@@ -32,22 +34,33 @@ class PayoutService
 
         $demo = getSetting('demo_payment', '0') === '1';
         $autoSend = !$demo && getSetting('auto_send_enabled', '0') === '1';
+        $net = activePaymentNetwork();
 
         $txHash = '';
         if ($autoSend) {
-            $sender = BscTokenSender::fromSettings();
-            if ($sender) {
-                $res = $sender->transfer($address, (string)$amountRaw);
-                if ($res['ok'] ?? false) {
-                    $txHash = (string)($res['tx'] ?? '');
-                } else {
-                    return ['ok' => false, 'error' => (string)($res['error'] ?? 'send failed')];
+            if ($net === 'ton') {
+                $sender = TonTokenSender::fromSettings();
+                if (!$sender) {
+                    return ['ok' => false, 'error' => 'TON wallet not configured'];
                 }
+                $res = $sender->transfer($address, (string)$amountRaw);
             } else {
-                return ['ok' => false, 'error' => 'Wallet/RPC not configured'];
+                $sender = BscTokenSender::fromSettings();
+                if (!$sender) {
+                    return ['ok' => false, 'error' => 'BSC wallet/RPC not configured'];
+                }
+                $res = $sender->transfer($address, (string)$amountRaw);
+            }
+            if ($res['ok'] ?? false) {
+                $txHash = (string)($res['tx'] ?? '');
+            } else {
+                return ['ok' => false, 'error' => (string)($res['error'] ?? 'send failed')];
             }
         } else {
             $txHash = '0x' . bin2hex(random_bytes(32));
+            if ($net === 'ton') {
+                $txHash = strtoupper(bin2hex(random_bytes(16))) . bin2hex(random_bytes(16));
+            }
         }
 
         $status = 'approved';
