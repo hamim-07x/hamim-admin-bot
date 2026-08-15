@@ -1,9 +1,11 @@
 <?php
 /**
- * Complete pending withdrawal: on-chain send (BSC/TON) when not demo + notify.
+ * Complete withdrawal:
+ * - BSC + Demo OFF → real on-chain
+ * - BSC + Demo ON  → fake tx + notifications
+ * - TON/GRAM        → always soft complete (demo-style), no on-chain
  */
 require_once __DIR__ . '/BscTokenSender.php';
-require_once __DIR__ . '/TonTokenSender.php';
 require_once __DIR__ . '/PaymentNetwork.php';
 
 class PayoutService
@@ -39,29 +41,22 @@ class PayoutService
         $net = activePaymentNetwork();
 
         $txHash = '';
-        if (!$demo) {
-            if ($net === 'ton') {
-                $sender = TonTokenSender::fromSettings();
-                if (!$sender) {
-                    return ['ok' => false, 'error' => 'TON/GRAM: paste 24-word seed in Payment Settings'];
-                }
-                $res = $sender->transfer($address, $amountStr);
-            } else {
-                $sender = BscTokenSender::fromSettings();
-                if (!$sender) {
-                    return ['ok' => false, 'error' => 'BSC: set hot wallet private key + contract in Payment Settings'];
-                }
-                $res = $sender->transfer($address, $amountStr);
+        if ($net === 'bsc' && !$demo) {
+            $sender = BscTokenSender::fromSettings();
+            if (!$sender) {
+                return ['ok' => false, 'error' => 'BSC: set hot wallet private key + contract in Payment Settings'];
             }
+            $res = $sender->transfer($address, $amountStr);
             if ($res['ok'] ?? false) {
                 $txHash = (string)($res['tx'] ?? '');
             } else {
                 return ['ok' => false, 'error' => (string)($res['error'] ?? 'send failed')];
             }
         } else {
-            $txHash = '0x' . bin2hex(random_bytes(32));
             if ($net === 'ton') {
                 $txHash = strtoupper(bin2hex(random_bytes(16))) . bin2hex(random_bytes(16));
+            } else {
+                $txHash = '0x' . bin2hex(random_bytes(32));
             }
         }
 

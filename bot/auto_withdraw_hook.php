@@ -1,6 +1,6 @@
 <?php
 /**
- * Auto / Demo: processing → wait → success + View Channel + Back (no early main menu)
+ * Auto / Demo: processing (few seconds) → success + View Channel + Back
  */
 function viewPaymentChannelMarkup(): array
 {
@@ -49,7 +49,7 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
     $text .= ce('ce_balance') . " Amount: <b>{$amtShow} {$c}</b>\n";
     $text .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
     $text .= ce('ce_receipt') . " Status: <b>Processing</b>\n";
-    $text .= ce('ce_warn') . " Please wait about <b>{$waitSec} seconds</b>…";
+    $text .= ce('ce_warn') . ' Processing will take a <b>few seconds</b>. Please wait…';
     botSend($bot, $chatId, $userId, $text, 'img_payout', [
         'reply_markup' => TelegramBot::removeKeyboard(),
     ]);
