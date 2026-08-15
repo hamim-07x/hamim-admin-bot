@@ -1,8 +1,10 @@
 <?php
-/** Called after a pending withdrawal is created. */
+/** Called after a pending withdrawal is created. Auto-approve or Demo mode. */
 function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, int $wdId, float $amount, string $address): bool
 {
-    if (getSetting('withdraw_mode', 'manual') !== 'auto' || $wdId <= 0) {
+    $demo = getSetting('demo_payment', '0') === '1';
+    $auto = getSetting('withdraw_mode', 'manual') === 'auto';
+    if ((!$demo && !$auto) || $wdId <= 0) {
         return false;
     }
 
@@ -12,13 +14,10 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
         $amtShow = '0';
     }
 
-    // Processing / loading message first (10–20 sec expectation)
-    $processing  = ce('ce_warn') . " <b>Payout processing…</b>\n\n";
-    $processing .= ce('ce_balance') . " Amount: <b>{$amtShow} {$c}</b>\n";
-    $processing .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n\n";
-    $processing .= ce('ce_receipt') . " Status: <b>PROCESSING</b>\n";
-    $processing .= ce('ce_network') . " Usually completes in <b>10–20 seconds</b>.\n";
-    $processing .= ce('ce_welcome_6') . ' Please wait — do not resubmit.';
+    $processing  = ce('ce_payout_ok') . " <b>Withdraw request successful</b>\n\n";
+    $processing .= ce('ce_receipt') . " Your request is <b>processing</b>.\n";
+    $processing .= ce('ce_warn') . " It may take <b>5–10 seconds</b>.\n\n";
+    $processing .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . '</code>';
     botSend($bot, $chatId, $userId, $processing, 'img_payout', ['reply_markup' => backInline()]);
 
     require_once __DIR__ . '/PayoutService.php';
@@ -33,11 +32,8 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
             $text .= "\n" . ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($result['tx']) . '</code>';
         }
     } else {
-        $text  = ce('ce_payout_no') . " <b>Auto-pay could not complete</b>\n\n";
-        $text .= ce('ce_balance') . " Amount: <b>{$amtShow} {$c}</b>\n";
-        $text .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-        $text .= ce('ce_warn') . ' ' . htmlspecialchars($result['error'] ?? 'pending admin review');
-        $text .= "\n" . ce('ce_receipt') . ' Request stays pending if send failed.';
+        $text  = ce('ce_payout_no') . " <b>Could not complete</b>\n\n";
+        $text .= ce('ce_warn') . ' ' . htmlspecialchars($result['error'] ?? 'pending review');
     }
     botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => backInline()]);
     return true;

@@ -59,11 +59,25 @@ if ($form === 'payment_buttons') {
 }
 
 if ($form === 'payment_modes') {
-    $mode = ($_POST['withdraw_mode'] ?? 'manual') === 'auto' ? 'auto' : 'manual';
-    $autoSend = ($_POST['auto_send_enabled'] ?? '0') === '1' ? '1' : '0';
-    setSetting('withdraw_mode', $mode);
-    setSetting('auto_send_enabled', $autoSend);
-    $_SESSION['flash'] = 'Payment mode settings saved.';
+    $demo = ($_POST['demo_payment'] ?? '0') === '1' ? '1' : '0';
+
+    if ($demo === '1') {
+        setSetting('demo_payment', '1');
+        setSetting('withdraw_mode', 'manual');
+        setSetting('auto_send_enabled', '0');
+        $_SESSION['flash'] = 'Demo payment ON. Auto-approve & Auto-send forced OFF. Fake TX + notifications only.';
+    } else {
+        setSetting('demo_payment', '0');
+        if (array_key_exists('withdraw_mode', $_POST)) {
+            $mode = ($_POST['withdraw_mode'] ?? 'manual') === 'auto' ? 'auto' : 'manual';
+            setSetting('withdraw_mode', $mode);
+        }
+        if (array_key_exists('auto_send_enabled', $_POST)) {
+            $autoSend = ($_POST['auto_send_enabled'] ?? '0') === '1' ? '1' : '0';
+            setSetting('auto_send_enabled', $autoSend);
+        }
+        $_SESSION['flash'] = 'Payment mode settings saved.';
+    }
     header('Location: /admin/?page=payment');
     exit;
 }
@@ -74,10 +88,15 @@ if ($form === 'payment') {
         'hot_wallet_private_key', 'usdt_contract', 'rpc_url', 'referral_bonus',
         'notify_btn_text', 'notify_btn_emoji_id', 'user_channel_btn_text',
         'user_channel_btn_emoji_id', 'auto_send_enabled', 'chain_id', 'token_decimals',
+        'demo_payment',
     ]);
     setSetting('network', 'BEP20');
     if (isset($_POST['payment_channel'])) {
         setSetting('notify_channel', trim((string)$_POST['payment_channel']));
+    }
+    if (getSetting('demo_payment', '0') === '1') {
+        setSetting('withdraw_mode', 'manual');
+        setSetting('auto_send_enabled', '0');
     }
     $_SESSION['flash'] = 'Payment settings saved.';
     header('Location: /admin/?page=payment');

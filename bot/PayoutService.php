@@ -1,6 +1,7 @@
 <?php
 /**
  * Complete a pending withdrawal: optional on-chain BEP-20 send + status + notify.
+ * Demo mode: looks real (fake tx hash + notifications) but never sends on-chain.
  */
 require_once __DIR__ . '/BscTokenSender.php';
 
@@ -20,13 +21,13 @@ class PayoutService
             return ['ok' => false, 'error' => 'already processed'];
         }
 
-        $userId = (int)$w['user_id'];
         $amountRaw = (float)$w['amount'];
         $address = (string)$w['address'];
 
-        $txHash = '';
-        $autoSend = getSetting('auto_send_enabled', '0') === '1';
+        $demo = getSetting('demo_payment', '0') === '1';
+        $autoSend = !$demo && getSetting('auto_send_enabled', '0') === '1';
 
+        $txHash = '';
         if ($autoSend) {
             $sender = BscTokenSender::fromSettings();
             if ($sender) {
@@ -44,9 +45,7 @@ class PayoutService
         }
 
         $status = 'approved';
-        if ($autoSend && $txHash !== '') {
-            $status = 'paid';
-        } elseif (getSetting('withdraw_mode', 'manual') === 'auto') {
+        if ($demo || getSetting('withdraw_mode', 'manual') === 'auto' || ($autoSend && $txHash !== '')) {
             $status = 'paid';
         }
 
@@ -86,8 +85,6 @@ class PayoutService
         $address = (string)$w['address'];
         $c = getSetting('currency_name', 'USDT');
         $s = getSetting('currency_symbol', '$');
-        $network = getSetting('network', 'BEP20');
-        $id = (int)$w['id'];
 
         $successPhoto = '';
         if (getSetting('img_payout_success_on', '0') === '1') {
@@ -103,7 +100,6 @@ class PayoutService
             $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
             $html .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
             $html .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
-            $html .= ce('ce_network') . " Network: <b>" . htmlspecialchars($network) . "</b>\n";
             $html .= ce('ce_receipt') . " Status: <b>APPROVED</b>\n";
             if ($txHash !== '') {
                 $html .= ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($txHash) . '</code>';
@@ -144,7 +140,6 @@ class PayoutService
                 '💵 Amount: <b>' . $s . $amount . ' ' . $c . '</b>',
                 '💳 Address:',
                 '<code>' . htmlspecialchars($address) . '</code>',
-                '🌐 Network: <b>' . htmlspecialchars($network) . '</b>',
                 '🧾 Status: <b>COMPLETE</b>',
             ];
             if ($txHash !== '') {
