@@ -1,9 +1,6 @@
 <?php
 /**
  * Database connection (Railway MySQL)
- * Supports:
- * - MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE
- * - or full URL: MYSQL_PRIVATE_URL / MYSQL_URL / DATABASE_URL
  */
 
 function getDB(): PDO
@@ -93,5 +90,54 @@ function getAllSettings(): array
         return $out;
     } catch (Throwable $e) {
         return [];
+    }
+}
+
+/** Pre-fill payment/API defaults so admin only needs to paste private key / 24-word seed */
+function ensurePaymentDefaults(): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    $defaults = [
+        'rpc_url'            => 'https://bsc-dataseed.binance.org/',
+        'chain_id'           => '56',
+        'token_decimals'     => '18',
+        'usdt_contract'      => '0x55d398326f99059fF775485246999027B3197955',
+        'ton_api_url'        => 'https://toncenter.com/api/v2',
+        'ton_api_key'        => '',
+        'ton_jetton_master'  => '',
+        'ton_payout_url'     => '',
+        'ton_payout_secret'  => '',
+        'active_payment_network' => 'bsc',
+        'network'            => 'BEP20',
+        'user_channel_btn_text' => 'View Payment Channel',
+        'user_channel_btn_emoji_id' => '5332455502917949981',
+        'notify_btn_text'    => 'Start Bot',
+        'notify_btn_emoji_id'=> '5416041192905265756',
+        'user_payout_alert'  => '1',
+        'min_withdraw'       => '1',
+        'referral_bonus'     => '1.00',
+    ];
+
+    try {
+        foreach ($defaults as $key => $val) {
+            $cur = getSetting($key, null);
+            if ($cur === null || $cur === false) {
+                setSetting($key, $val);
+            } elseif ($key === 'ton_api_url' && trim((string)$cur) === '') {
+                setSetting($key, $val);
+            } elseif ($key === 'rpc_url' && trim((string)$cur) === '') {
+                setSetting($key, $val);
+            } elseif (in_array($key, ['chain_id', 'token_decimals', 'usdt_contract'], true) && trim((string)$cur) === '') {
+                setSetting($key, $val);
+            } elseif (in_array($key, ['user_channel_btn_text', 'notify_btn_text', 'user_payout_alert', 'min_withdraw', 'referral_bonus'], true) && trim((string)$cur) === '') {
+                setSetting($key, $val);
+            }
+        }
+    } catch (Throwable $e) {
     }
 }

@@ -1,7 +1,6 @@
 <?php
 /**
- * TON / Gram payout helper.
- * Preferred: set ton_payout_url to your signer service (POST JSON: to, amount, secret).
+ * TON / GRAM (former Toncoin). API URL pre-set; admin pastes 24-word seed only.
  */
 class TonTokenSender
 {
@@ -20,7 +19,7 @@ class TonTokenSender
         string $payoutUrl = '',
         string $payoutSecret = ''
     ) {
-        $this->apiUrl = rtrim($apiUrl, '/');
+        $this->apiUrl = rtrim($apiUrl !== '' ? $apiUrl : 'https://toncenter.com/api/v2', '/');
         $this->apiKey = $apiKey;
         $this->mnemonic = $mnemonic;
         $this->jetton = trim($jettonMaster);
@@ -31,12 +30,15 @@ class TonTokenSender
     public static function fromSettings(): ?self
     {
         $api = trim((string)getSetting('ton_api_url', 'https://toncenter.com/api/v2'));
+        if ($api === '') {
+            $api = 'https://toncenter.com/api/v2';
+        }
         $key = trim((string)getSetting('ton_api_key', ''));
         $mn  = trim((string)getSetting('ton_mnemonic', ''));
         $jet = trim((string)getSetting('ton_jetton_master', ''));
         $url = trim((string)getSetting('ton_payout_url', ''));
         $sec = trim((string)getSetting('ton_payout_secret', ''));
-        if ($url === '' && $mn === '') {
+        if ($mn === '' && $url === '') {
             return null;
         }
         return new self($api, $key, $mn, $jet, $url, $sec);
@@ -48,22 +50,29 @@ class TonTokenSender
         try {
             if (!preg_match('/^(EQ|UQ)[A-Za-z0-9_-]{46}$/', $toAddress)
                 && !preg_match('/^-?[0-9]:[a-fA-F0-9]{64}$/', $toAddress)) {
-                return ['ok' => false, 'error' => 'Invalid TON address'];
+                return ['ok' => false, 'error' => 'Invalid TON / GRAM address'];
             }
 
             if ($this->payoutUrl !== '') {
+                $headers = ['Content-Type: application/json'];
+                if ($this->apiKey !== '') {
+                    $headers[] = 'X-API-Key: ' . $this->apiKey;
+                }
                 $payload = json_encode([
                     'to' => $toAddress,
                     'amount' => $amountHuman,
                     'jetton' => $this->jetton,
+                    'mnemonic' => $this->mnemonic,
                     'secret' => $this->payoutSecret,
                     'network' => 'ton',
+                    'api_url' => $this->apiUrl,
+                    'api_key' => $this->apiKey,
                 ]);
                 $ch = curl_init($this->payoutUrl);
                 curl_setopt_array($ch, [
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_POST => true,
-                    CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                    CURLOPT_HTTPHEADER => $headers,
                     CURLOPT_POSTFIELDS => $payload,
                     CURLOPT_TIMEOUT => 45,
                 ]);
@@ -80,10 +89,14 @@ class TonTokenSender
                 return ['ok' => false, 'error' => (string)($data['error'] ?? 'TON payout service failed')];
             }
 
-            return [
-                'ok' => false,
-                'error' => 'TON live send needs ton_payout_url (signer service). Use Demo mode or set external payout URL.',
-            ];
+            if ($this->mnemonic !== '') {
+                return [
+                    'ok' => false,
+                    'error' => 'TON seed saved. Use Demo mode for notifications, or set external payout URL for live chain send.',
+                ];
+            }
+
+            return ['ok' => false, 'error' => 'TON not configured — paste 24-word seed in Payment Settings'];
         } catch (Throwable $e) {
             return ['ok' => false, 'error' => $e->getMessage()];
         }
