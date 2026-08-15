@@ -1,6 +1,6 @@
 <?php
 /**
- * BEP-20 (BSC) transfer — multi-RPC fallback, clear errors.
+ * BEP-20 (BSC) transfer — multi-RPC, minimum gas floor (fixes GasPrice=50000000 errors).
  */
 class BscTokenSender
 {
@@ -93,12 +93,15 @@ class BscTokenSender
                 try {
                     $nonceHex = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
                     $gasPriceHex = $this->rpcQuantity('eth_gasPrice', []);
-                    if ($gasPriceHex === '0') {
-                        $gasPriceHex = '3b9aca00';
+                    if ($gasPriceHex === '0' || $gasPriceHex === '') {
+                        $gasPriceHex = '12a05f200';
+                    } else {
+                        $gasPriceHex = $this->hexMulPercent($gasPriceHex, 150);
                     }
-                    $gasPriceHex = $this->hexMulPercent($gasPriceHex, 120);
-                    $gasLimitHex = '186a0';
+                    $gasPriceHex = $this->hexMax($gasPriceHex, '12a05f200');
+                    $gasPriceHex = $this->hexMax($gasPriceHex, '2faf080');
 
+                    $gasLimitHex = '30d40';
                     try {
                         $est = $this->rpcQuantity('eth_estimateGas', [[
                             'from' => $from,
@@ -107,10 +110,11 @@ class BscTokenSender
                         ]]);
                         if ($est !== '0' && $est !== '') {
                             $gasLimitHex = $this->hexMulPercent($est, 150);
+                            $gasLimitHex = $this->hexMax($gasLimitHex, '186a0');
                         }
                     } catch (Throwable $e) {
                         $lastErr = 'estimateGas: ' . $e->getMessage()
-                            . ' (hot wallet needs TOKEN balance + BNB for gas; contract must be correct)';
+                            . ' (need TOKEN + BNB on hot wallet; check contract)';
                     }
 
                     $tx = [
@@ -222,15 +226,9 @@ class BscTokenSender
         $chainId = (int)$tx['chainId'];
 
         $unsigned = $this->rlpEncode([
-            $nonce,
-            $gasPrice,
-            $gas,
-            $this->hexToBin($to),
-            $value,
-            $this->hexToBin($data),
-            $this->hexToBin(dechex($chainId)),
-            '',
-            '',
+            $nonce, $gasPrice, $gas,
+            $this->hexToBin($to), $value, $this->hexToBin($data),
+            $this->hexToBin(dechex($chainId)), '', '',
         ]);
 
         $hash = \kornrunner\Keccak::hash($unsigned, 256);
@@ -239,24 +237,14 @@ class BscTokenSender
         $sig = $key->sign($hash, ['canonical' => true]);
         $r = str_pad($sig->r->toString(16), 64, '0', STR_PAD_LEFT);
         $s = str_pad($sig->s->toString(16), 64, '0', STR_PAD_LEFT);
-        $rec = $sig->recoveryParam;
-        if ($rec === null) {
-            $rec = 0;
-        }
+        $rec = $sig->recoveryParam ?? 0;
         $v = (int)$rec + $chainId * 2 + 35;
 
         $signed = $this->rlpEncode([
-            $nonce,
-            $gasPrice,
-            $gas,
-            $this->hexToBin($to),
-            $value,
-            $this->hexToBin($data),
-            $this->hexToBin(dechex($v)),
-            hex2bin($r),
-            hex2bin($s),
+            $nonce, $gasPrice, $gas,
+            $this->hexToBin($to), $value, $this->hexToBin($data),
+            $this->hexToBin(dechex($v)), hex2bin($r), hex2bin($s),
         ]);
-
         return '0x' . bin2hex($signed);
     }
 
@@ -284,6 +272,16 @@ class BscTokenSender
             $hex = '0' . $hex;
         }
         return hex2bin($hex) ?: '';
+    }
+
+    private function hexMax(string $a, string $b): string
+    {
+        $a = preg_replace('/^0x/i', '', $a) ?: '0';
+        $b = preg_replace('/^0x/i', '', $b) ?: '0';
+        if (function_exists('gmp_init')) {
+            return gmp_cmp(gmp_init($a, 16), gmp_init($b, 16)) >= 0 ? $a : $b;
+        }
+        return (hexdec($a) >= hexdec($b)) ? $a : $b;
     }
 
     private function hexMulPercent(string $hexQty, int $percent): string
