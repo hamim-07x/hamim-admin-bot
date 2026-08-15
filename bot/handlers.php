@@ -29,6 +29,20 @@ function stripReplyKeyboard(TelegramBot $bot, int $chatId): void
     }
 }
 
+/** Delete the user's own message to keep chat clean */
+function tryDeleteUserMessage(TelegramBot $bot, array $message): void
+{
+    $chatId = $message['chat']['id'] ?? null;
+    $mid = $message['message_id'] ?? null;
+    if ($chatId === null || $mid === null) {
+        return;
+    }
+    try {
+        $bot->deleteMessage($chatId, (int)$mid);
+    } catch (Throwable $e) {
+    }
+}
+
 function handleMessage(TelegramBot $bot, array $message): void
 {
     $chatId = $message['chat']['id'];
@@ -36,6 +50,8 @@ function handleMessage(TelegramBot $bot, array $message): void
     $text   = trim($message['text'] ?? '');
     $from   = $message['from'];
     ensureUser($from);
+
+    tryDeleteUserMessage($bot, $message);
 
     if (isUserBlocked($userId)) {
         botSend($bot, $chatId, $userId, 'You are blocked from using this bot.');
