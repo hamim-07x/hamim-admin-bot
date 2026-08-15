@@ -1,12 +1,29 @@
 <?php
 /**
- * Complete withdrawal + notify (user premium emoji, channel plain unicode)
+ * Complete withdrawal + notify
  */
 require_once __DIR__ . '/BscTokenSender.php';
 require_once __DIR__ . '/PaymentNetwork.php';
 
 class PayoutService
 {
+    /** Mask address for public channel: 0xe4****2B15 */
+    public static function maskAddress(string $address): string
+    {
+        $address = trim($address);
+        if ($address === '') {
+            return '';
+        }
+        if (preg_match('/^0x[a-fA-F0-9]{40}$/i', $address)) {
+            return substr($address, 0, 4) . '****' . substr($address, -4);
+        }
+        $len = strlen($address);
+        if ($len > 10) {
+            return substr($address, 0, 4) . '****' . substr($address, -4);
+        }
+        return $address;
+    }
+
     /**
      * @param array{notify_user?:bool,notify_channel?:bool,from_admin?:bool} $opts
      * @return array{ok:bool,tx?:string,error?:string,status?:string}
@@ -131,7 +148,7 @@ class PayoutService
             $payChannelRaw = trim((string)getSetting('notify_channel', ''));
         }
 
-        // Private chat: premium custom emoji (tg-emoji)
+        // Private chat: full address + premium emoji
         if ($notifyUser && getSetting('user_payout_alert', '1') === '1') {
             $html  = ce('ce_payout_ok') . " <b>Payout successful</b>\n\n";
             $html .= ce('ce_balance') . " Amount: <b>{$s}{$amount} {$c}</b>\n";
@@ -152,8 +169,7 @@ class PayoutService
             }
         }
 
-        // Channel: plain unicode (channel owner may not have Premium)
-        // Order: title → User ID → Amount → Status → Address → TX
+        // Channel: masked address (public)
         if ($notifyChannel && $payChannelRaw !== '') {
             $chat = $payChannelRaw;
             if (!str_starts_with($chat, '@') && !str_starts_with($chat, '-') && preg_match('/^\d+$/', $chat)) {
@@ -161,14 +177,13 @@ class PayoutService
             } elseif (!str_starts_with($chat, '@') && !str_starts_with($chat, '-')) {
                 $chat = '@' . ltrim($chat, '@');
             }
+            $masked = self::maskAddress($address);
             $lines = [
                 '🎟 <b>New Payout successfully Paid</b>',
                 '',
                 '👤 User ID: <code>' . $userId . '</code>',
                 '💵 Amount: <b>' . $s . $amount . ' ' . $c . '</b>',
-                '🧾 Status: <b>COMPLETE</b> ✅',
-                '💳 Address:',
-                '<code>' . htmlspecialchars($address) . '</code>',
+                '💳 Address: <code>' . htmlspecialchars($masked) . '</code>',
             ];
             if ($txHash !== '') {
                 $lines[] = '';
