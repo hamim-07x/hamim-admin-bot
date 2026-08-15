@@ -1,6 +1,6 @@
 <?php
 /**
- * Auto / Demo: processing wait → success with View Payment Channel + Back
+ * Auto / Demo: processing → wait → success + View Channel + Back (no early main menu)
  */
 function viewPaymentChannelMarkup(): array
 {
@@ -49,10 +49,10 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
     $text .= ce('ce_balance') . " Amount: <b>{$amtShow} {$c}</b>\n";
     $text .= ce('ce_card') . " Address:\n<code>" . htmlspecialchars($address) . "</code>\n";
     $text .= ce('ce_receipt') . " Status: <b>Processing</b>\n";
-    $text .= ce('ce_warn') . " Auto-complete in about <b>{$waitSec} seconds</b>. Please wait.";
-    botSend($bot, $chatId, $userId, $text, 'img_payout', ['reply_markup' => TelegramBot::removeKeyboard()]);
-
-    showMainMenu($bot, $chatId, $userId);
+    $text .= ce('ce_warn') . " Please wait about <b>{$waitSec} seconds</b>…";
+    botSend($bot, $chatId, $userId, $text, 'img_payout', [
+        'reply_markup' => TelegramBot::removeKeyboard(),
+    ]);
 
     sleep($waitSec);
 
@@ -70,11 +70,15 @@ function tryAutoCompleteWithdrawal(TelegramBot $bot, int $chatId, int $userId, i
         if (!empty($result['tx'])) {
             $ok .= "\n" . ce('ce_ref_2') . " Transaction:\n<code>" . htmlspecialchars($result['tx']) . '</code>';
         }
-        botSend($bot, $chatId, $userId, $ok, 'img_payout', ['reply_markup' => viewPaymentChannelMarkup()]);
+        botSend($bot, $chatId, $userId, $ok, 'img_payout', [
+            'reply_markup' => viewPaymentChannelMarkup(),
+        ]);
     } else {
         $err  = ce('ce_payout_no') . " <b>Could not complete</b>\n\n";
         $err .= ce('ce_warn') . ' ' . htmlspecialchars($result['error'] ?? 'pending review');
-        botSend($bot, $chatId, $userId, $err, 'img_payout', ['reply_markup' => backInline()]);
+        botSend($bot, $chatId, $userId, $err, 'img_payout', [
+            'reply_markup' => viewPaymentChannelMarkup(),
+        ]);
     }
     return true;
 }
