@@ -1,6 +1,6 @@
 <?php
 /**
- * BEP-20 (BSC) transfer — multi-RPC, minimum gas floor (fixes GasPrice=50000000 errors).
+ * BEP-20 (BSC) transfer — multi-RPC, gas floor, nonce retry.
  */
 class BscTokenSender
 {
@@ -91,7 +91,6 @@ class BscTokenSender
             foreach ($this->rpcs as $rpc) {
                 $this->activeRpc = $rpc;
                 try {
-                    $nonceHex = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
                     $gasPriceHex = $this->rpcQuantity('eth_gasPrice', []);
                     if ($gasPriceHex === '0' || $gasPriceHex === '') {
                         $gasPriceHex = '12a05f200';
@@ -117,21 +116,41 @@ class BscTokenSender
                             . ' (need TOKEN + BNB on hot wallet; check contract)';
                     }
 
-                    $tx = [
-                        'nonce' => $nonceHex,
-                        'gasPrice' => $gasPriceHex,
-                        'gas' => $gasLimitHex,
-                        'to' => $this->contract,
-                        'value' => '0',
-                        'data' => $data,
-                        'chainId' => $this->chainId,
-                    ];
-                    $raw = $this->signTransaction($tx, $this->privateKey);
-                    $txHash = $this->rpcCall('eth_sendRawTransaction', [$raw]);
-                    if (is_string($txHash) && str_starts_with($txHash, '0x') && strlen($txHash) >= 66) {
-                        return ['ok' => true, 'tx' => $txHash, 'from' => $from];
+                    $nonceHex = $this->fetchNonceHex($from);
+                    for ($attempt = 0; $attempt < 5; $attempt++) {
+                        try {
+                            $tx = [
+                                'nonce' => $nonceHex,
+                                'gasPrice' => $gasPriceHex,
+                                'gas' => $gasLimitHex,
+                                'to' => $this->contract,
+                                'value' => '0',
+                                'data' => $data,
+                                'chainId' => $this->chainId,
+                            ];
+                            $raw = $this->signTransaction($tx, $this->privateKey);
+                            $txHash = $this->rpcCall('eth_sendRawTransaction', [$raw]);
+                            if (is_string($txHash) && str_starts_with($txHash, '0x') && strlen($txHash) >= 66) {
+                                return ['ok' => true, 'tx' => $txHash, 'from' => $from];
+                            }
+                            $lastErr = 'RPC returned invalid tx hash';
+                            break;
+                        } catch (Throwable $e) {
+                            $msg = $e->getMessage();
+                            $lastErr = $msg;
+                            if (preg_match('/next nonce\s*(\d+)/i', $msg, $m)) {
+                                $nonceHex = ltrim($this->decToHexPad($m[1], 0), '0') ?: '0';
+                                usleep(250000);
+                                continue;
+                            }
+                            if (stripos($msg, 'nonce too low') !== false || stripos($msg, 'already known') !== false) {
+                                $nonceHex = $this->fetchNonceHex($from);
+                                usleep(300000);
+                                continue;
+                            }
+                            break;
+                        }
                     }
-                    $lastErr = 'RPC returned invalid tx hash';
                 } catch (Throwable $e) {
                     $lastErr = $e->getMessage();
                     continue;
@@ -145,6 +164,13 @@ class BscTokenSender
         } catch (Throwable $e) {
             return ['ok' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    private function fetchNonceHex(string $from): string
+    {
+        $pending = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
+        $latest = $this->rpcQuantity('eth_getTransactionCount', [$from, 'latest']);
+        return $this->hexMax($pending, $latest);
     }
 
     private function loadCrypto(): void
