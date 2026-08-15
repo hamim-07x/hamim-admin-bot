@@ -1,14 +1,15 @@
 <?php
 /**
- * BEP-20 (BSC) token transfer from hot wallet private key.
+ * BEP-20 (BSC) transfer — multi-RPC fallback, clear errors.
  */
 class BscTokenSender
 {
-    private string $rpc;
+    private array $rpcs;
     private string $privateKey;
     private string $contract;
     private int $chainId;
     private int $decimals;
+    private string $activeRpc = '';
 
     public function __construct(
         string $rpcUrl,
@@ -17,20 +18,38 @@ class BscTokenSender
         int $chainId = 56,
         int $decimals = 18
     ) {
-        $this->rpc = rtrim($rpcUrl, '/');
+        $list = [];
+        foreach (preg_split('/[\s,;]+/', $rpcUrl) as $u) {
+            $u = rtrim(trim($u), '/');
+            if ($u !== '' && preg_match('#^https?://#i', $u)) {
+                $list[] = $u;
+            }
+        }
+        foreach ([
+            'https://bsc-dataseed.binance.org',
+            'https://bsc-dataseed1.binance.org',
+            'https://bsc-dataseed2.binance.org',
+            'https://rpc.ankr.com/bsc',
+            'https://bsc.publicnode.com',
+        ] as $fb) {
+            if (!in_array($fb, $list, true)) {
+                $list[] = $fb;
+            }
+        }
+        $this->rpcs = $list;
         $pk = preg_replace('/^0x/i', '', trim($privateKeyHex));
         $this->privateKey = strtolower($pk);
         $this->contract = strtolower(trim($tokenContract));
-        $this->chainId = $chainId;
-        $this->decimals = $decimals;
+        if (!str_starts_with($this->contract, '0x')) {
+            $this->contract = '0x' . $this->contract;
+        }
+        $this->chainId = $chainId > 0 ? $chainId : 56;
+        $this->decimals = $decimals > 0 ? $decimals : 18;
     }
 
     public static function fromSettings(): ?self
     {
         $rpc = trim((string)getSetting('rpc_url', 'https://bsc-dataseed.binance.org/'));
-        if ($rpc === '') {
-            $rpc = 'https://bsc-dataseed.binance.org/';
-        }
         $pk  = trim((string)getSetting('hot_wallet_private_key', ''));
         $ct  = trim((string)getSetting('usdt_contract', '0x55d398326f99059fF775485246999027B3197955'));
         $chainId = (int)getSetting('chain_id', '56');
@@ -38,32 +57,27 @@ class BscTokenSender
         if ($pk === '' || $ct === '') {
             return null;
         }
-        if (!preg_match('/^[a-fA-F0-9]{64}$/', preg_replace('/^0x/i', '', $pk))) {
+        $pkClean = preg_replace('/^0x/i', '', $pk);
+        if (!preg_match('/^[a-fA-F0-9]{64}$/', $pkClean)) {
             return null;
         }
-        if ($chainId <= 0) {
-            $chainId = 56;
-        }
-        if ($decimals <= 0) {
-            $decimals = 18;
-        }
-        return new self($rpc, $pk, $ct, $chainId, $decimals);
+        return new self($rpc !== '' ? $rpc : 'https://bsc-dataseed.binance.org/', $pkClean, $ct, $chainId, $decimals);
     }
 
-    /** @return array{ok:bool,tx?:string,error?:string} */
+    public function getFromAddress(): string
+    {
+        $this->loadCrypto();
+        return $this->addressFromPrivateKey($this->privateKey);
+    }
+
+    /** @return array{ok:bool,tx?:string,error?:string,from?:string} */
     public function transfer(string $toAddress, string $amountHuman): array
     {
         try {
-            $toAddress = trim($toAddress);
+            $this->loadCrypto();
+            $toAddress = strtolower(trim($toAddress));
             if (!preg_match('/^0x[a-fA-F0-9]{40}$/', $toAddress)) {
-                return ['ok' => false, 'error' => 'Invalid recipient address'];
-            }
-            $vendor = dirname(__DIR__) . '/vendor/autoload.php';
-            if (is_file($vendor)) {
-                require_once $vendor;
-            }
-            if (!class_exists('Elliptic\\EC') || !class_exists('kornrunner\\Keccak')) {
-                return ['ok' => false, 'error' => 'Crypto libs missing (composer install / redeploy)'];
+                return ['ok' => false, 'error' => 'Invalid recipient address (need 0x + 40 hex)'];
             }
 
             $from = $this->addressFromPrivateKey($this->privateKey);
@@ -73,42 +87,70 @@ class BscTokenSender
             }
             $data = $this->encodeTransfer($toAddress, $amountWei);
 
-            $nonceHex = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
-            $gasPriceHex = $this->rpcQuantity('eth_gasPrice', []);
-            $gasPriceHex = $this->hexMulPercent($gasPriceHex, 115);
-            $gasLimitHex = '186a0';
+            $lastErr = '';
+            foreach ($this->rpcs as $rpc) {
+                $this->activeRpc = $rpc;
+                try {
+                    $nonceHex = $this->rpcQuantity('eth_getTransactionCount', [$from, 'pending']);
+                    $gasPriceHex = $this->rpcQuantity('eth_gasPrice', []);
+                    if ($gasPriceHex === '0') {
+                        $gasPriceHex = '3b9aca00';
+                    }
+                    $gasPriceHex = $this->hexMulPercent($gasPriceHex, 120);
+                    $gasLimitHex = '186a0';
 
-            try {
-                $est = $this->rpcQuantity('eth_estimateGas', [[
-                    'from' => $from,
-                    'to' => $this->contract,
-                    'data' => $data,
-                ]]);
-                if ($est !== '0' && $est !== '') {
-                    $gasLimitHex = $this->hexMulPercent($est, 130);
+                    try {
+                        $est = $this->rpcQuantity('eth_estimateGas', [[
+                            'from' => $from,
+                            'to' => $this->contract,
+                            'data' => $data,
+                        ]]);
+                        if ($est !== '0' && $est !== '') {
+                            $gasLimitHex = $this->hexMulPercent($est, 150);
+                        }
+                    } catch (Throwable $e) {
+                        $lastErr = 'estimateGas: ' . $e->getMessage()
+                            . ' (hot wallet needs TOKEN balance + BNB for gas; contract must be correct)';
+                    }
+
+                    $tx = [
+                        'nonce' => $nonceHex,
+                        'gasPrice' => $gasPriceHex,
+                        'gas' => $gasLimitHex,
+                        'to' => $this->contract,
+                        'value' => '0',
+                        'data' => $data,
+                        'chainId' => $this->chainId,
+                    ];
+                    $raw = $this->signTransaction($tx, $this->privateKey);
+                    $txHash = $this->rpcCall('eth_sendRawTransaction', [$raw]);
+                    if (is_string($txHash) && str_starts_with($txHash, '0x') && strlen($txHash) >= 66) {
+                        return ['ok' => true, 'tx' => $txHash, 'from' => $from];
+                    }
+                    $lastErr = 'RPC returned invalid tx hash';
+                } catch (Throwable $e) {
+                    $lastErr = $e->getMessage();
+                    continue;
                 }
-            } catch (Throwable $e) {
-                error_log('[BSC] estimateGas: ' . $e->getMessage());
             }
-
-            $tx = [
-                'nonce' => $nonceHex,
-                'gasPrice' => $gasPriceHex,
-                'gas' => $gasLimitHex,
-                'to' => $this->contract,
-                'value' => '0',
-                'data' => $data,
-                'chainId' => $this->chainId,
+            return [
+                'ok' => false,
+                'error' => $lastErr !== '' ? $lastErr : 'All RPCs failed',
+                'from' => $from,
             ];
-
-            $raw = $this->signTransaction($tx, $this->privateKey);
-            $txHash = $this->rpcString('eth_sendRawTransaction', [$raw]);
-            if ($txHash === '' || !str_starts_with($txHash, '0x')) {
-                return ['ok' => false, 'error' => 'RPC rejected transaction (check BNB for gas + token balance)'];
-            }
-            return ['ok' => true, 'tx' => $txHash];
         } catch (Throwable $e) {
             return ['ok' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    private function loadCrypto(): void
+    {
+        $vendor = dirname(__DIR__) . '/vendor/autoload.php';
+        if (is_file($vendor)) {
+            require_once $vendor;
+        }
+        if (!class_exists(\Elliptic\EC::class) || !class_exists(\kornrunner\Keccak::class)) {
+            throw new RuntimeException('Crypto libs missing — Railway redeploy needed (composer)');
         }
     }
 
@@ -227,8 +269,7 @@ class BscTokenSender
         if (str_starts_with($q, '0x') || str_starts_with($q, '0X')) {
             $hex = preg_replace('/^0x/i', '', $q);
         } elseif (ctype_digit($q)) {
-            $hex = $this->decToHexPad($q, 0);
-            $hex = ltrim($hex, '0');
+            $hex = ltrim($this->decToHexPad($q, 0), '0');
             if ($hex === '') {
                 return '';
             }
@@ -256,8 +297,7 @@ class BscTokenSender
             $n = gmp_div(gmp_mul($n, (string)$percent), '100');
             return gmp_strval($n, 16);
         }
-        $v = (int)hexdec($hex);
-        return dechex((int)floor($v * $percent / 100));
+        return dechex((int)floor(hexdec($hex) * $percent / 100));
     }
 
     private function hexToBin(string $hex): string
@@ -301,7 +341,7 @@ class BscTokenSender
         return chr(strlen($binLen) + $offset + 55) . $binLen;
     }
 
-    private function rpc(string $method, array $params)
+    private function rpcCall(string $method, array $params)
     {
         $payload = json_encode([
             'jsonrpc' => '2.0',
@@ -309,23 +349,26 @@ class BscTokenSender
             'method' => $method,
             'params' => $params,
         ]);
-        $ch = curl_init($this->rpc);
+        $ch = curl_init($this->activeRpc);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_TIMEOUT => 45,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_CONNECTTIMEOUT => 10,
         ]);
         $res = curl_exec($ch);
         $err = curl_error($ch);
         curl_close($ch);
         if ($res === false) {
-            throw new RuntimeException('RPC connection failed: ' . $err);
+            throw new RuntimeException('RPC connection failed (' . $this->activeRpc . '): ' . $err);
         }
         $data = json_decode($res, true);
         if (isset($data['error'])) {
-            $msg = $data['error']['message'] ?? 'RPC error';
+            $msg = is_array($data['error'])
+                ? ($data['error']['message'] ?? json_encode($data['error']))
+                : (string)$data['error'];
             throw new RuntimeException($msg);
         }
         return $data['result'] ?? null;
@@ -333,16 +376,10 @@ class BscTokenSender
 
     private function rpcQuantity(string $method, array $params): string
     {
-        $r = $this->rpc($method, $params);
+        $r = $this->rpcCall($method, $params);
         if (!is_string($r) || $r === '' || $r === '0x') {
             return '0';
         }
         return preg_replace('/^0x/i', '', $r) ?: '0';
-    }
-
-    private function rpcString(string $method, array $params): string
-    {
-        $r = $this->rpc($method, $params);
-        return is_string($r) ? $r : '';
     }
 }
