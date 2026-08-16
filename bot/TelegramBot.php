@@ -56,7 +56,6 @@ class TelegramBot
             'disable_web_page_preview' => true,
         ], $extra);
 
-        // entities mode: do not force HTML parse_mode
         if (!empty($params['entities'])) {
             unset($params['parse_mode']);
         } elseif (empty($params['parse_mode'])) {
@@ -86,11 +85,25 @@ class TelegramBot
         return $this->request('sendPhoto', $params);
     }
 
-    /**
-     * Send message with native custom_emoji entities (best chance in channels).
-     * $parts = list of ['t'=>text] or ['e'=>emojiId,'f'=>fallbackChar]
-     * Bold segments: ['b'=>true,'t'=>text]
-     */
+    /** Copy any message type to another chat (keeps media/format). */
+    public function copyMessage(int|string $toChatId, int|string $fromChatId, int $messageId): ?array
+    {
+        return $this->request('copyMessage', [
+            'chat_id'      => $toChatId,
+            'from_chat_id' => $fromChatId,
+            'message_id'   => $messageId,
+        ]);
+    }
+
+    public function forwardMessage(int|string $toChatId, int|string $fromChatId, int $messageId): ?array
+    {
+        return $this->request('forwardMessage', [
+            'chat_id'      => $toChatId,
+            'from_chat_id' => $fromChatId,
+            'message_id'   => $messageId,
+        ]);
+    }
+
     public function sendRich(int|string $chatId, array $parts, array $extra = [], string $photoUrl = ''): ?array
     {
         $text = '';
@@ -147,7 +160,6 @@ class TelegramBot
         return $this->sendMessage($chatId, $text, $payload);
     }
 
-    /** UTF-16 code unit length (Telegram entity offsets) */
     public static function utf16Len(string $s): int
     {
         if ($s === '') {
