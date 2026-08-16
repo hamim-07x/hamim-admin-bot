@@ -21,6 +21,24 @@ function saveKeys(array $keys): void
     }
 }
 
+if ($form === 'bot_admins') {
+    $raw = trim((string)($_POST['bot_admin_ids'] ?? ''));
+    // Keep only digits, commas, spaces
+    $parts = preg_split('/[\s,;]+/', $raw);
+    $ids = [];
+    foreach ($parts as $p) {
+        $p = preg_replace('/\D+/', '', $p);
+        if ($p !== '' && strlen($p) >= 5) {
+            $ids[] = $p;
+        }
+    }
+    $ids = array_values(array_unique($ids));
+    setSetting('bot_admin_ids', implode(',', $ids));
+    $_SESSION['flash'] = 'Bot admin Telegram IDs saved (' . count($ids) . '). They can use /broadcast.';
+    header('Location: /admin/?page=webhook');
+    exit;
+}
+
 if ($form === 'payment_basic') {
     saveKeys(['payment_channel', 'min_withdraw', 'user_payout_alert', 'referral_bonus']);
     if (isset($_POST['payment_channel'])) {

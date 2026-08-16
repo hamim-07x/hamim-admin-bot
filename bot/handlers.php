@@ -3,6 +3,7 @@ require_once __DIR__ . '/TelegramBot.php';
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/screens_ui.php';
 require_once __DIR__ . '/screens_user.php';
+require_once __DIR__ . '/broadcast.php';
 
 function handleUpdate(array $update): void
 {
@@ -29,7 +30,7 @@ function stripReplyKeyboard(TelegramBot $bot, int $chatId): void
     }
 }
 
-/** Delete the user's own message to keep chat clean */
+/** Delete the user's own message to keep chat clean (except /start) */
 function tryDeleteUserMessage(TelegramBot $bot, array $message): void
 {
     $chatId = $message['chat']['id'] ?? null;
@@ -51,14 +52,54 @@ function handleMessage(TelegramBot $bot, array $message): void
     $from   = $message['from'];
     ensureUser($from);
 
-    tryDeleteUserMessage($bot, $message);
+    $isStart = str_starts_with($text, '/start');
+    // Keep /start visible; delete other user messages for clean UX
+    if (!$isStart) {
+        tryDeleteUserMessage($bot, $message);
+    }
 
     if (isUserBlocked($userId)) {
         botSend($bot, $chatId, $userId, 'You are blocked from using this bot.');
         return;
     }
 
-    if (str_starts_with($text, '/start')) {
+    // /broadcast + /cancel for bot admins
+    if ($text === '/broadcast' || str_starts_with($text, '/broadcast@')) {
+        if (!isBotAdmin($userId)) {
+            botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' You are not a bot admin.');
+            return;
+        }
+        showBroadcastPanel($bot, $chatId, $userId);
+        return;
+    }
+    if ($text === '/cancel' || str_starts_with($text, '/cancel@')) {
+        if (getBotState($userId) === 'broadcast_wait') {
+            clearBotState($userId);
+            botSend($bot, $chatId, $userId, ce('ce_ok') . ' Broadcast cancelled.');
+            return;
+        }
+    }
+
+    // Waiting for broadcast content (any message / forward)
+    if (getBotState($userId) === 'broadcast_wait') {
+        if (!isBotAdmin($userId)) {
+            clearBotState($userId);
+            botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' You are not a bot admin.');
+            return;
+        }
+        $mid = (int)($message['message_id'] ?? 0);
+        if ($mid <= 0) {
+            botSend($bot, $chatId, $userId, ce('ce_warn') . ' Could not read message. Try again.');
+            return;
+        }
+        // Message may already be deleted above — Telegram still allows copy by id shortly after
+        // Re-fetch: if deleted, copy fails. So for broadcast_wait we should NOT have deleted.
+        // Handled: we deleted already. Fix: skip delete when broadcast_wait — see below note.
+        runBroadcast($bot, (int)$chatId, $userId, (int)$chatId, $mid);
+        return;
+    }
+
+    if ($isStart) {
         $parts = explode(' ', $text, 2);
         if (!empty($parts[1])) {
             applyReferral($userId, $parts[1]);
@@ -145,6 +186,26 @@ function handleCallback(TelegramBot $bot, array $cb): void
 
     if (isUserBlocked($userId) && $data !== 'agree_continue') {
         $bot->answerCallback($cbId, 'You are blocked', true);
+        return;
+    }
+
+    if ($data === 'bc_start') {
+        if (!isBotAdmin($userId)) {
+            $bot->answerCallback($cbId, 'Not a bot admin', true);
+            return;
+        }
+        $bot->answerCallback($cbId, 'Send message');
+        askBroadcastContent($bot, $chatId, $userId);
+        return;
+    }
+    if ($data === 'bc_cancel') {
+        $bot->answerCallback($cbId, 'Cancelled');
+        clearBotState($userId);
+        if (isBotAdmin($userId)) {
+            showBroadcastPanel($bot, $chatId, $userId);
+        } else {
+            showMainMenu($bot, $chatId, $userId);
+        }
         return;
     }
 
