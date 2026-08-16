@@ -30,7 +30,6 @@ function stripReplyKeyboard(TelegramBot $bot, int $chatId): void
     }
 }
 
-/** Delete the user's own message to keep chat clean (except /start) */
 function tryDeleteUserMessage(TelegramBot $bot, array $message): void
 {
     $chatId = $message['chat']['id'] ?? null;
@@ -54,8 +53,9 @@ function handleMessage(TelegramBot $bot, array $message): void
 
     $isStart = str_starts_with($text, '/start');
     $stateNow = getBotState($userId);
-    // Keep /start + broadcast content (needed for copyMessage)
-    if (!$isStart && $stateNow !== 'broadcast_wait') {
+    $bcStates = ['broadcast_wait', 'broadcast_preview', 'broadcast_btn_text', 'broadcast_btn_url'];
+    // Keep /start + broadcast content messages (need message_id for copy)
+    if (!$isStart && !in_array($stateNow, $bcStates, true)) {
         tryDeleteUserMessage($bot, $message);
     }
 
@@ -64,7 +64,6 @@ function handleMessage(TelegramBot $bot, array $message): void
         return;
     }
 
-    // /broadcast + /cancel for bot admins
     if ($text === '/broadcast' || str_starts_with($text, '/broadcast@')) {
         if (!isBotAdmin($userId)) {
             botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' You are not a bot admin.');
@@ -74,26 +73,73 @@ function handleMessage(TelegramBot $bot, array $message): void
         return;
     }
     if ($text === '/cancel' || str_starts_with($text, '/cancel@')) {
-        if (getBotState($userId) === 'broadcast_wait') {
+        if (in_array(getBotState($userId), $bcStates, true)) {
             clearBotState($userId);
             botSend($bot, $chatId, $userId, ce('ce_ok') . ' Broadcast cancelled.');
             return;
         }
     }
 
-    // Waiting for broadcast content (any message / forward)
-    if (getBotState($userId) === 'broadcast_wait') {
+    // --- Broadcast state machine (admin only) ---
+    $state = getBotState($userId);
+    if (in_array($state, $bcStates, true)) {
         if (!isBotAdmin($userId)) {
             clearBotState($userId);
             botSend($bot, $chatId, $userId, ce('ce_payout_no') . ' You are not a bot admin.');
             return;
         }
-        $mid = (int)($message['message_id'] ?? 0);
-        if ($mid <= 0) {
-            botSend($bot, $chatId, $userId, ce('ce_warn') . ' Could not read message. Try again.');
+
+        if ($state === 'broadcast_wait') {
+            $mid = (int)($message['message_id'] ?? 0);
+            if ($mid <= 0) {
+                botSend($bot, $chatId, $userId, ce('ce_warn') . ' Could not read message. Try again.');
+                return;
+            }
+            showBroadcastPreview($bot, (int)$chatId, $userId, (int)$chatId, $mid, []);
             return;
         }
-        runBroadcast($bot, (int)$chatId, $userId, (int)$chatId, $mid);
+
+        if ($state === 'broadcast_btn_text') {
+            $data = getBotStateData($userId);
+            if ($text === '') {
+                botSend($bot, $chatId, $userId, ce('ce_warn') . ' Send button text (e.g. Open Channel).');
+                return;
+            }
+            $data['pending_btn_text'] = mb_substr($text, 0, 64);
+            setBotState($userId, 'broadcast_btn_url', $data);
+            botSend($bot, $chatId, $userId, ce('ce_card') . " Now send the <b>URL</b> for this button (https://…)", '', [
+                'reply_markup' => TelegramBot::inlineKeyboard([
+                    [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5210952531676504517'))],
+                ]),
+            ]);
+            return;
+        }
+
+        if ($state === 'broadcast_btn_url') {
+            $data = getBotStateData($userId);
+            $url = trim($text);
+            if (!preg_match('#^https?://#i', $url)) {
+                botSend($bot, $chatId, $userId, ce('ce_warn') . ' Invalid URL. Send full link starting with https://');
+                return;
+            }
+            $buttons = $data['buttons'] ?? [];
+            if (!is_array($buttons)) {
+                $buttons = [];
+            }
+            $buttons[] = [
+                'text' => (string)($data['pending_btn_text'] ?? 'Open'),
+                'url'  => $url,
+            ];
+            // max 5 url buttons
+            $buttons = array_slice($buttons, 0, 5);
+            $fromChat = (int)($data['from_chat_id'] ?? $chatId);
+            $msgId = (int)($data['message_id'] ?? 0);
+            showBroadcastPreview($bot, (int)$chatId, $userId, $fromChat, $msgId, $buttons);
+            return;
+        }
+
+        // broadcast_preview: ignore random text; wait for buttons
+        botSend($bot, $chatId, $userId, ce('ce_warn') . ' Use Confirm / Cancel / Add Button below.');
         return;
     }
 
@@ -187,23 +233,53 @@ function handleCallback(TelegramBot $bot, array $cb): void
         return;
     }
 
-    if ($data === 'bc_start') {
+    // Broadcast callbacks — admin only
+    if (str_starts_with($data, 'bc_')) {
         if (!isBotAdmin($userId)) {
             $bot->answerCallback($cbId, 'Not a bot admin', true);
             return;
         }
-        $bot->answerCallback($cbId, 'Send message');
-        askBroadcastContent($bot, $chatId, $userId);
-        return;
-    }
-    if ($data === 'bc_cancel') {
-        $bot->answerCallback($cbId, 'Cancelled');
-        clearBotState($userId);
-        if (isBotAdmin($userId)) {
-            showBroadcastPanel($bot, $chatId, $userId);
-        } else {
-            showMainMenu($bot, $chatId, $userId);
+        if ($data === 'bc_start') {
+            $bot->answerCallback($cbId, 'Send content');
+            askBroadcastContent($bot, $chatId, $userId);
+            return;
         }
+        if ($data === 'bc_cancel') {
+            $bot->answerCallback($cbId, 'Cancelled');
+            clearBotState($userId);
+            showBroadcastPanel($bot, $chatId, $userId);
+            return;
+        }
+        if ($data === 'bc_confirm') {
+            $st = getBotStateData($userId);
+            $fromChat = (int)($st['from_chat_id'] ?? 0);
+            $msgId = (int)($st['message_id'] ?? 0);
+            $buttons = is_array($st['buttons'] ?? null) ? $st['buttons'] : [];
+            if ($fromChat <= 0 || $msgId <= 0) {
+                $bot->answerCallback($cbId, 'No message', true);
+                clearBotState($userId);
+                return;
+            }
+            $bot->answerCallback($cbId, 'Starting…');
+            startBroadcastJob($bot, (int)$chatId, $userId, $fromChat, $msgId, $buttons);
+            return;
+        }
+        if ($data === 'bc_add_btn') {
+            $st = getBotStateData($userId);
+            if (getBotState($userId) !== 'broadcast_preview') {
+                $bot->answerCallback($cbId, 'Send content first', true);
+                return;
+            }
+            $bot->answerCallback($cbId, 'Button text');
+            setBotState($userId, 'broadcast_btn_text', $st);
+            botSend($bot, $chatId, $userId, ce('ce_card') . " Send <b>button name</b> (e.g. Join Channel)", '', [
+                'reply_markup' => TelegramBot::inlineKeyboard([
+                    [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5210952531676504517'))],
+                ]),
+            ]);
+            return;
+        }
+        $bot->answerCallback($cbId);
         return;
     }
 
