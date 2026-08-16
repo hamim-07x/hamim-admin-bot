@@ -1,10 +1,8 @@
 <?php
 /**
- * Scalable bot-admin broadcast.
- * - Preview → Confirm / Cancel / Add URL button
- * - copyMessage (keeps premium emoji, media, format)
- * - Background batches so 5k–200k users won't kill webhook
+ * Scalable bot-admin broadcast with premium emoji upgrade.
  */
+require_once __DIR__ . '/premium_emojis.php';
 
 function isBotAdmin(int $userId): bool
 {
@@ -29,14 +27,16 @@ function ensureBroadcastTable(): void
     }
     $done = true;
     try {
-        getDB()->exec(
+        $db = getDB();
+        $db->exec(
             "CREATE TABLE IF NOT EXISTS broadcast_jobs (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 admin_id BIGINT NOT NULL,
                 admin_chat_id BIGINT NOT NULL,
                 from_chat_id BIGINT NOT NULL,
-                message_id INT NOT NULL,
+                message_id INT NOT NULL DEFAULT 0,
                 buttons_json TEXT NULL,
+                content_json TEXT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending',
                 offset_id BIGINT NOT NULL DEFAULT 0,
                 total INT NOT NULL DEFAULT 0,
@@ -49,6 +49,12 @@ function ensureBroadcastTable(): void
                 INDEX (offset_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         );
+        try {
+            if (!$db->query("SHOW COLUMNS FROM broadcast_jobs LIKE 'content_json'")->fetch()) {
+                $db->exec('ALTER TABLE broadcast_jobs ADD COLUMN content_json TEXT NULL');
+            }
+        } catch (Throwable $e) {
+        }
     } catch (Throwable $e) {
         error_log('[BC] ensure table: ' . $e->getMessage());
     }
@@ -66,12 +72,10 @@ function broadcastWorkerUrl(int $jobId): string
     if ($host === '') {
         $host = parse_url((string)getSetting('app_url', ''), PHP_URL_HOST) ?: '';
     }
-    $scheme = 'https';
     $secret = urlencode(broadcastWorkerSecret());
-    return "{$scheme}://{$host}/broadcast_worker.php?job={$jobId}&key={$secret}";
+    return 'https://' . $host . '/broadcast_worker.php?job=' . $jobId . '&key=' . $secret;
 }
 
-/** Non-blocking trigger next batch */
 function triggerBroadcastWorker(int $jobId): void
 {
     $url = broadcastWorkerUrl($jobId);
@@ -89,19 +93,73 @@ function triggerBroadcastWorker(int $jobId): void
     }
 }
 
+/**
+ * Build payload from admin message: upgrade plain unicode → premium where possible.
+ */
+function prepareBroadcastPayload(array $message): array
+{
+    $chatId = (int)($message['chat']['id'] ?? 0);
+    $mid = (int)($message['message_id'] ?? 0);
+    $text = (string)($message['text'] ?? '');
+    $caption = (string)($message['caption'] ?? '');
+
+    $complex = !empty($message['video']) || !empty($message['document'])
+        || !empty($message['animation']) || !empty($message['sticker'])
+        || !empty($message['audio']) || !empty($message['voice'])
+        || !empty($message['video_note']);
+
+    // Plain text → premium HTML
+    if ($text !== '' && empty($message['photo']) && !$complex) {
+        $safe = htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $html = upgradeTextEmojisToPremium($safe);
+        return [
+            'mode'         => 'html',
+            'html'         => $html,
+            'from_chat_id' => $chatId,
+            'message_id'   => $mid,
+        ];
+    }
+
+    // Photo (+ optional caption upgrade)
+    if (!empty($message['photo']) && is_array($message['photo']) && !$complex) {
+        $photos = $message['photo'];
+        $best = $photos[count($photos) - 1] ?? [];
+        $fileId = (string)($best['file_id'] ?? '');
+        $capHtml = '';
+        if ($caption !== '') {
+            $capHtml = upgradeTextEmojisToPremium(htmlspecialchars($caption, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+        }
+        return [
+            'mode'          => 'photo',
+            'photo_file_id' => $fileId,
+            'html'          => $capHtml,
+            'from_chat_id'  => $chatId,
+            'message_id'    => $mid,
+        ];
+    }
+
+    // Forward / media / already-premium → copy as-is
+    return [
+        'mode'         => 'copy',
+        'from_chat_id' => $chatId,
+        'message_id'   => $mid,
+    ];
+}
+
 function showBroadcastPanel(TelegramBot $bot, int $chatId, int $userId): void
 {
     clearBotState($userId);
     $text  = ce('ce_menu_1') . " <b>Broadcast</b>\n\n";
     $text .= ce('ce_warn') . " Only listed bot admins can use this.\n";
     $text .= ce('ce_ref_rocket') . " Flow: content → preview → confirm.\n";
-    $text .= ce('ce_ok') . " Supports text, photo, premium emoji, forward.";
+    $text .= ce('ce_ok') . " Plain emojis auto-upgrade to premium from your packs.";
 
-    $idGo = btnEmojiId('ce_btn_agree', '5206607081334906820');
-    $idBack = btnEmojiId('ce_btn_back', '5416041192905265756');
+    $idGo = btnEmojiId('ce_btn_agree', '5021905410089550576');
+    $idBack = btnEmojiId('ce_btn_back', '5854967531793550989');
+    $idNo = btnEmojiId('ce_btn_cancel', '5019523782004441717');
     $kb = TelegramBot::inlineKeyboard([
         [inlineBtn('Start Broadcast', 'bc_start', $idGo)],
-        [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5210952531676504517'))],
+        [inlineBtn('Cancel', 'bc_cancel', $idNo)],
         [inlineBtn('Back', 'go_menu', $idBack)],
     ]);
     botSend($bot, $chatId, $userId, $text, '', ['reply_markup' => $kb]);
@@ -111,15 +169,17 @@ function askBroadcastContent(TelegramBot $bot, int $chatId, int $userId): void
 {
     setBotState($userId, 'broadcast_wait', []);
     $text  = ce('ce_payout_ok') . " <b>Send broadcast content</b>\n\n";
-    $text .= ce('ce_card') . " Send text / photo / premium emoji, or <b>forward</b> any message.\n";
-    $text .= ce('ce_warn') . " Next you will see a preview before it goes live.";
+    $text .= ce('ce_card') . " Text / photo / forward — anything works.\n";
+    $text .= ce('ce_spark') . " Normal emojis → premium automatically.\n";
+    $text .= ce('ce_warn') . " You will preview before send.";
+    // ce_spark may not exist — use fire as fallback path in ce()
+    $text = str_replace(ce('ce_spark'), premiumTag('spark'), $text);
     $kb = TelegramBot::inlineKeyboard([
-        [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5210952531676504517'))],
+        [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5019523782004441717'))],
     ]);
     botSend($bot, $chatId, $userId, $text, '', ['reply_markup' => $kb]);
 }
 
-/** @param array<int,array{text:string,url:string}> $buttons */
 function broadcastPreviewMarkup(array $buttons = []): array
 {
     $rows = [];
@@ -130,8 +190,8 @@ function broadcastPreviewMarkup(array $buttons = []): array
             $rows[] = [['text' => $t, 'url' => $u]];
         }
     }
-    $idOk = btnEmojiId('ce_btn_agree', '5206607081334906820');
-    $idNo = btnEmojiId('ce_btn_cancel', '5210952531676504517');
+    $idOk = btnEmojiId('ce_btn_agree', '5021905410089550576');
+    $idNo = btnEmojiId('ce_btn_cancel', '5019523782004441717');
     $rows[] = [
         inlineBtn('Confirm Broadcast', 'bc_confirm', $idOk),
         inlineBtn('Cancel', 'bc_cancel', $idNo),
@@ -140,30 +200,44 @@ function broadcastPreviewMarkup(array $buttons = []): array
     return TelegramBot::inlineKeyboard($rows);
 }
 
-function showBroadcastPreview(TelegramBot $bot, int $chatId, int $userId, int $fromChatId, int $messageId, array $buttons = []): void
+/**
+ * @param array $payload from prepareBroadcastPayload
+ * @param array<int,array{text:string,url:string}> $buttons
+ */
+function showBroadcastPreview(TelegramBot $bot, int $chatId, int $userId, array $payload, array $buttons = []): void
 {
-    setBotState($userId, 'broadcast_preview', [
-        'from_chat_id' => $fromChatId,
-        'message_id'   => $messageId,
-        'buttons'      => $buttons,
-    ]);
+    $payload['buttons'] = $buttons;
+    setBotState($userId, 'broadcast_preview', $payload);
 
-    // Show same content to admin (premium emoji preserved via copy)
-    $copied = $bot->copyMessage($chatId, $fromChatId, $messageId);
-    if (!$copied || !($copied['ok'] ?? false)) {
-        $bot->forwardMessage($chatId, $fromChatId, $messageId);
+    $mode = $payload['mode'] ?? 'copy';
+    if ($mode === 'html' && !empty($payload['html'])) {
+        $bot->sendMessage($chatId, (string)$payload['html'], [
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => true,
+        ]);
+    } elseif ($mode === 'photo' && !empty($payload['photo_file_id'])) {
+        $bot->sendPhoto($chatId, (string)$payload['photo_file_id'], (string)($payload['html'] ?? ''), [
+            'parse_mode' => 'HTML',
+        ]);
+    } else {
+        $from = (int)($payload['from_chat_id'] ?? $chatId);
+        $mid = (int)($payload['message_id'] ?? 0);
+        $copied = $bot->copyMessage($chatId, $from, $mid);
+        if (!$copied || !($copied['ok'] ?? false)) {
+            $bot->forwardMessage($chatId, $from, $mid);
+        }
     }
 
-    $text  = ce('ce_warn') . " <b>Preview above</b> — this is exactly what users will receive.\n\n";
-    $text .= ce('ce_ok') . " Confirm to start, or Cancel.\n";
-    $text .= ce('ce_card') . " Optional: Add Button (name + link).";
+    $text  = ce('ce_warn') . " <b>Preview above</b> — users will get this.\n\n";
+    $text .= ce('ce_ok') . " Confirm to start · Cancel to abort.\n";
+    $text .= ce('ce_card') . " Optional: Add Button (name + https link).";
     $bot->sendMessage($chatId, $text, [
         'parse_mode' => 'HTML',
         'reply_markup' => broadcastPreviewMarkup($buttons),
     ]);
 }
 
-function startBroadcastJob(TelegramBot $bot, int $adminChatId, int $adminId, int $fromChatId, int $messageId, array $buttons = []): void
+function startBroadcastJob(TelegramBot $bot, int $adminChatId, int $adminId, array $payload): void
 {
     ensureBroadcastTable();
     clearBotState($adminId);
@@ -180,6 +254,9 @@ function startBroadcastJob(TelegramBot $bot, int $adminChatId, int $adminId, int
         return;
     }
 
+    $buttons = is_array($payload['buttons'] ?? null) ? $payload['buttons'] : [];
+    unset($payload['buttons']);
+
     $prog  = ce('ce_ref_rocket') . " <b>Broadcast queued</b>\n\n";
     $prog .= ce('ce_chart') . " Users: <b>0 / {$total}</b>\n";
     $prog .= ce('ce_ok') . " Sent: <b>0</b>\n";
@@ -189,29 +266,25 @@ function startBroadcastJob(TelegramBot $bot, int $adminChatId, int $adminId, int
     $progMid = (int)($res['result']['message_id'] ?? 0);
 
     $stmt = $db->prepare(
-        'INSERT INTO broadcast_jobs (admin_id, admin_chat_id, from_chat_id, message_id, buttons_json, status, offset_id, total, ok_count, fail_count, progress_mid)
-         VALUES (?,?,?,?,?,?,0,?,0,0,?)'
+        'INSERT INTO broadcast_jobs (admin_id, admin_chat_id, from_chat_id, message_id, buttons_json, content_json, status, offset_id, total, ok_count, fail_count, progress_mid)
+         VALUES (?,?,?,?,?,?,\'running\',0,?,0,0,?)'
     );
     $stmt->execute([
         $adminId,
         $adminChatId,
-        $fromChatId,
-        $messageId,
+        (int)($payload['from_chat_id'] ?? 0),
+        (int)($payload['message_id'] ?? 0),
         $buttons ? json_encode($buttons, JSON_UNESCAPED_UNICODE) : null,
-        'running',
+        json_encode($payload, JSON_UNESCAPED_UNICODE),
         $total,
         $progMid > 0 ? $progMid : null,
     ]);
     $jobId = (int)$db->lastInsertId();
 
-    // First tick immediately (small batch), rest via worker
     processBroadcastBatch($jobId);
     triggerBroadcastWorker($jobId);
 }
 
-/**
- * Process one batch. Safe to call many times. Returns true if job still running.
- */
 function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
 {
     ensureBroadcastTable();
@@ -230,10 +303,19 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
         return false;
     }
     require_once __DIR__ . '/TelegramBot.php';
+    require_once __DIR__ . '/helpers.php';
     $bot = new TelegramBot($token);
 
-    $fromChat = (int)$job['from_chat_id'];
-    $msgId = (int)$job['message_id'];
+    $content = json_decode((string)($job['content_json'] ?? ''), true);
+    if (!is_array($content)) {
+        $content = [
+            'mode' => 'copy',
+            'from_chat_id' => (int)$job['from_chat_id'],
+            'message_id' => (int)$job['message_id'],
+        ];
+    }
+    $mode = $content['mode'] ?? 'copy';
+
     $offsetId = (int)$job['offset_id'];
     $ok = (int)$job['ok_count'];
     $fail = (int)$job['fail_count'];
@@ -241,25 +323,21 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
     $adminChat = (int)$job['admin_chat_id'];
     $progMid = (int)($job['progress_mid'] ?? 0);
 
-    $buttons = [];
+    $replyMarkup = null;
     if (!empty($job['buttons_json'])) {
         $decoded = json_decode((string)$job['buttons_json'], true);
         if (is_array($decoded)) {
-            $buttons = $decoded;
-        }
-    }
-    $replyMarkup = null;
-    if ($buttons) {
-        $rows = [];
-        foreach ($buttons as $b) {
-            $t = trim((string)($b['text'] ?? ''));
-            $u = trim((string)($b['url'] ?? ''));
-            if ($t !== '' && preg_match('#^https?://#i', $u)) {
-                $rows[] = [['text' => $t, 'url' => $u]];
+            $rows = [];
+            foreach ($decoded as $b) {
+                $t = trim((string)($b['text'] ?? ''));
+                $u = trim((string)($b['url'] ?? ''));
+                if ($t !== '' && preg_match('#^https?://#i', $u)) {
+                    $rows[] = [['text' => $t, 'url' => $u]];
+                }
             }
-        }
-        if ($rows) {
-            $replyMarkup = json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE);
+            if ($rows) {
+                $replyMarkup = ['inline_keyboard' => $rows];
+            }
         }
     }
 
@@ -276,21 +354,7 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
     }
 
     if (!$ids) {
-        $db->prepare("UPDATE broadcast_jobs SET status='done', updated_at=NOW() WHERE id=?")->execute([$jobId]);
-        $done  = ce('ce_payout_ok') . " <b>Broadcast complete</b>\n\n";
-        $done .= ce('ce_chart') . " Total: <b>{$total}</b>\n";
-        $done .= ce('ce_ok') . " Delivered: <b>{$ok}</b>\n";
-        $done .= ce('ce_no') . " Failed: <b>{$fail}</b>";
-        if ($progMid > 0) {
-            try {
-                $bot->editMessage($adminChat, $progMid, $done, ['parse_mode' => 'HTML']);
-            } catch (Throwable $e) {
-                $bot->sendMessage($adminChat, $done, ['parse_mode' => 'HTML']);
-            }
-        } else {
-            $bot->sendMessage($adminChat, $done, ['parse_mode' => 'HTML']);
-        }
-        return false;
+        return finishBroadcastJob($bot, $db, $jobId, $adminChat, $progMid, $total, $ok, $fail);
     }
 
     $lastId = $offsetId;
@@ -299,35 +363,49 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
         $lastId = $uid;
         $sent = false;
         try {
-            $params = [
-                'chat_id'      => $uid,
-                'from_chat_id' => $fromChat,
-                'message_id'   => $msgId,
-            ];
-            if ($replyMarkup) {
-                $params['reply_markup'] = $replyMarkup;
-            }
-            $r = $bot->request('copyMessage', $params);
-            if ($r && ($r['ok'] ?? false)) {
-                $sent = true;
+            if ($mode === 'html' && !empty($content['html'])) {
+                $extra = ['parse_mode' => 'HTML', 'disable_web_page_preview' => true];
+                if ($replyMarkup) {
+                    $extra['reply_markup'] = $replyMarkup;
+                }
+                $r = $bot->sendMessage($uid, (string)$content['html'], $extra);
+                $sent = $r && ($r['ok'] ?? false);
+                if (!$sent) {
+                    $plain = stripTgEmoji((string)$content['html']);
+                    $r = $bot->sendMessage($uid, $plain, $extra);
+                    $sent = $r && ($r['ok'] ?? false);
+                }
+            } elseif ($mode === 'photo' && !empty($content['photo_file_id'])) {
+                $extra = ['parse_mode' => 'HTML'];
+                if ($replyMarkup) {
+                    $extra['reply_markup'] = $replyMarkup;
+                }
+                $r = $bot->sendPhoto($uid, (string)$content['photo_file_id'], (string)($content['html'] ?? ''), $extra);
+                $sent = $r && ($r['ok'] ?? false);
+            } else {
+                $params = [
+                    'chat_id' => $uid,
+                    'from_chat_id' => (int)($content['from_chat_id'] ?? $job['from_chat_id']),
+                    'message_id' => (int)($content['message_id'] ?? $job['message_id']),
+                ];
+                if ($replyMarkup) {
+                    $params['reply_markup'] = json_encode($replyMarkup, JSON_UNESCAPED_UNICODE);
+                }
+                $r = $bot->request('copyMessage', $params);
+                $sent = $r && ($r['ok'] ?? false);
+                if (!$sent) {
+                    $r = $bot->forwardMessage($uid, (int)$params['from_chat_id'], (int)$params['message_id']);
+                    $sent = $r && ($r['ok'] ?? false);
+                }
             }
         } catch (Throwable $e) {
-        }
-        if (!$sent) {
-            try {
-                $r = $bot->forwardMessage($uid, $fromChat, $msgId);
-                if ($r && ($r['ok'] ?? false)) {
-                    $sent = true;
-                }
-            } catch (Throwable $e) {
-            }
         }
         if ($sent) {
             $ok++;
         } else {
             $fail++;
         }
-        usleep(30000); // ~30 msg/s max
+        usleep(30000);
     }
 
     $doneCount = $ok + $fail;
@@ -345,7 +423,6 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
         }
     }
 
-    // More left?
     try {
         $more = $db->prepare('SELECT id FROM users WHERE id > ? AND COALESCE(is_blocked,0)=0 ORDER BY id ASC LIMIT 1');
         $more->execute([$lastId]);
@@ -357,20 +434,26 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
     }
 
     if (!$hasMore) {
-        $db->prepare("UPDATE broadcast_jobs SET status='done', updated_at=NOW() WHERE id=?")->execute([$jobId]);
-        $done  = ce('ce_payout_ok') . " <b>Broadcast complete</b>\n\n";
-        $done .= ce('ce_chart') . " Total: <b>{$total}</b>\n";
-        $done .= ce('ce_ok') . " Delivered: <b>{$ok}</b>\n";
-        $done .= ce('ce_no') . " Failed: <b>{$fail}</b>";
-        if ($progMid > 0) {
-            try {
-                $bot->editMessage($adminChat, $progMid, $done, ['parse_mode' => 'HTML']);
-            } catch (Throwable $e) {
-                $bot->sendMessage($adminChat, $done, ['parse_mode' => 'HTML']);
-            }
-        }
-        return false;
+        return finishBroadcastJob($bot, $db, $jobId, $adminChat, $progMid, $total, $ok, $fail);
     }
-
     return true;
+}
+
+function finishBroadcastJob(TelegramBot $bot, $db, int $jobId, int $adminChat, int $progMid, int $total, int $ok, int $fail): bool
+{
+    $db->prepare("UPDATE broadcast_jobs SET status='done', updated_at=NOW() WHERE id=?")->execute([$jobId]);
+    $done  = ce('ce_payout_ok') . " <b>Broadcast complete</b>\n\n";
+    $done .= ce('ce_chart') . " Total: <b>{$total}</b>\n";
+    $done .= ce('ce_ok') . " Delivered: <b>{$ok}</b>\n";
+    $done .= ce('ce_no') . " Failed: <b>{$fail}</b>";
+    if ($progMid > 0) {
+        try {
+            $bot->editMessage($adminChat, $progMid, $done, ['parse_mode' => 'HTML']);
+        } catch (Throwable $e) {
+            $bot->sendMessage($adminChat, $done, ['parse_mode' => 'HTML']);
+        }
+    } else {
+        $bot->sendMessage($adminChat, $done, ['parse_mode' => 'HTML']);
+    }
+    return false;
 }
