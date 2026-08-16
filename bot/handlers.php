@@ -53,8 +53,9 @@ function handleMessage(TelegramBot $bot, array $message): void
     ensureUser($from);
 
     $isStart = str_starts_with($text, '/start');
-    // Keep /start visible; delete other user messages for clean UX
-    if (!$isStart) {
+    $stateNow = getBotState($userId);
+    // Keep /start + broadcast content (needed for copyMessage)
+    if (!$isStart && $stateNow !== 'broadcast_wait') {
         tryDeleteUserMessage($bot, $message);
     }
 
@@ -92,9 +93,6 @@ function handleMessage(TelegramBot $bot, array $message): void
             botSend($bot, $chatId, $userId, ce('ce_warn') . ' Could not read message. Try again.');
             return;
         }
-        // Message may already be deleted above — Telegram still allows copy by id shortly after
-        // Re-fetch: if deleted, copy fails. So for broadcast_wait we should NOT have deleted.
-        // Handled: we deleted already. Fix: skip delete when broadcast_wait — see below note.
         runBroadcast($bot, (int)$chatId, $userId, (int)$chatId, $mid);
         return;
     }
