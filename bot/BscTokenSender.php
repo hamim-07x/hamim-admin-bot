@@ -1,6 +1,7 @@
 <?php
 /**
- * BEP-20 (BSC) — low gas, nonce fix, already-known=success, balance preflight.
+ * BEP-20 (BSC) — ultra-low gas (cap ~0.12 gwei), nonce fix, balance preflight.
+ * Target fee similar to ~0.05 gwei × ~65k gas ≈ $0.001–0.01 range.
  */
 class BscTokenSender
 {
@@ -20,6 +21,7 @@ class BscTokenSender
                 $list[] = $u;
             }
         }
+        // Prefer official Binance seeds first (stable + often lower quoted gas)
         foreach ([
             'https://bsc-dataseed.binance.org',
             'https://bsc-dataseed1.binance.org',
@@ -92,7 +94,7 @@ class BscTokenSender
             $nonceDec = $this->fetchMaxNonceDecimal($from);
             $lastErr = '';
             $errors = [];
-            for ($attempt = 0; $attempt < 8; $attempt++) {
+            for ($attempt = 0; $attempt < 10; $attempt++) {
                 $nonceHex = ltrim($this->decToHexPad((string)$nonceDec, 0), '0') ?: '0';
                 $tx = [
                     'nonce' => $nonceHex,
@@ -127,9 +129,9 @@ class BscTokenSender
                             $next = (int)$m2[1];
                             if ($next > $nonceDec) {
                                 $nonceDec = $next;
-                                break;
+                            } else {
+                                $nonceDec++;
                             }
-                            $nonceDec++;
                             break;
                         }
                         if (stripos($msg, 'nonce too low') !== false) {
@@ -140,8 +142,9 @@ class BscTokenSender
                             $nonceDec = $this->fetchMaxNonceDecimal($from);
                             break;
                         }
-                        if (stripos($msg, 'underpriced') !== false) {
-                            $gasPriceHex = $this->hexMulPercent($gasPriceHex, 112);
+                        // Underpriced: bump a little, but stay under hard CAP
+                        if (stripos($msg, 'underpriced') !== false || stripos($msg, 'replacement transaction') !== false) {
+                            $gasPriceHex = $this->bumpGasPrice($gasPriceHex, 115);
                             break;
                         }
                         if (stripos($msg, 'insufficient funds') !== false || stripos($msg, 'insufficient balance') !== false) {
@@ -282,28 +285,64 @@ class BscTokenSender
         return $max;
     }
 
+    /**
+     * Ultra-low gas strategy (matches early txs ~0.05 gwei / ~$0.001):
+     * - floor 0.05 gwei
+     * - prefer network * 102% but HARD CAP 0.12 gwei (keeps fee under ~1 cent typically)
+     * - underpriced bumps stay under 0.25 gwei max emergency
+     */
     private function fetchGasPriceHex(): string
     {
-        $gas = '1dcd6500';
+        $floor = '2faf080';   // 50_000_000  = 0.05 gwei
+        $cap   = '7270e00';   // 120_000_000 = 0.12 gwei
+        $gas   = $floor;
+
+        $samples = [];
+        $tried = 0;
         foreach ($this->rpcs as $rpc) {
+            if ($tried >= 4) {
+                break;
+            }
             $this->activeRpc = $rpc;
+            $tried++;
             try {
                 $gp = $this->rpcQuantity('eth_gasPrice', []);
                 if ($gp !== '0' && $gp !== '') {
-                    $gas = $this->hexMulPercent($gp, 105);
-                    break;
+                    $samples[] = $gp;
                 }
             } catch (Throwable $e) {
                 continue;
             }
         }
-        $gas = $this->hexMax($gas, '2faf080');
+
+        if ($samples) {
+            // Use the lowest quoted network gas among samples (cheapest path)
+            $lowest = $samples[0];
+            foreach ($samples as $s) {
+                $lowest = $this->hexMin($lowest, $s);
+            }
+            // +2% only — avoid the old 105–112% bloat
+            $gas = $this->hexMulPercent($lowest, 102);
+        }
+
+        // Enforce floor and hard cap
+        $gas = $this->hexMax($gas, $floor);
+        $gas = $this->hexMin($gas, $cap);
         return $gas;
+    }
+
+    /** Bump on underpriced, but never exceed emergency 0.25 gwei. */
+    private function bumpGasPrice(string $current, int $percent): string
+    {
+        $emergencyCap = 'ee6b280'; // 250_000_000 = 0.25 gwei
+        $next = $this->hexMulPercent($current, $percent);
+        return $this->hexMin($this->hexMax($next, '2faf080'), $emergencyCap);
     }
 
     private function estimateGasHex(string $from, string $data): string
     {
-        $limit = '186a0';
+        // Typical BEP-20 transfer ~45k–65k; keep tight multiplier
+        $limit = 'fde8'; // 65_000 default
         foreach ($this->rpcs as $rpc) {
             $this->activeRpc = $rpc;
             try {
@@ -313,10 +352,12 @@ class BscTokenSender
                     'data' => $data,
                 ]]);
                 if ($est !== '0' && $est !== '') {
-                    $limit = $this->hexMulPercent($est, 110);
-                    $limit = $this->hexMax($limit, 'ea60');
-                    if (function_exists('gmp_init') && gmp_cmp(gmp_init($limit, 16), gmp_init('249f0', 16)) > 0) {
-                        $limit = '249f0';
+                    // Only +5% headroom (was 110%)
+                    $limit = $this->hexMulPercent($est, 105);
+                    $limit = $this->hexMax($limit, 'c350'); // min 50_000
+                    // Hard max 120_000 for simple transfer
+                    if (function_exists('gmp_init') && gmp_cmp(gmp_init($limit, 16), gmp_init('1d4c0', 16)) > 0) {
+                        $limit = '1d4c0';
                     }
                     break;
                 }
@@ -473,6 +514,21 @@ class BscTokenSender
             return strlen($a) > strlen($b) ? $a : $b;
         }
         return strcasecmp($a, $b) >= 0 ? $a : $b;
+    }
+
+    private function hexMin(string $a, string $b): string
+    {
+        $a = preg_replace('/^0x/i', '', $a) ?: '0';
+        $b = preg_replace('/^0x/i', '', $b) ?: '0';
+        if (function_exists('gmp_init')) {
+            return gmp_cmp(gmp_init($a, 16), gmp_init($b, 16)) <= 0 ? $a : $b;
+        }
+        $a = ltrim($a, '0') ?: '0';
+        $b = ltrim($b, '0') ?: '0';
+        if (strlen($a) !== strlen($b)) {
+            return strlen($a) < strlen($b) ? $a : $b;
+        }
+        return strcasecmp($a, $b) <= 0 ? $a : $b;
     }
 
     private function hexMulPercent(string $hexQty, int $percent): string
