@@ -1,6 +1,8 @@
 <?php
 /* Message helpers: photo + auto-delete + custom emoji — inline only UI */
 
+require_once __DIR__ . '/premium_emojis.php';
+
 function botSend(TelegramBot $bot, int $chatId, int $userId, string $text, string $imgKey = '', array $extra = []): void
 {
     deleteAllBotMessages($bot, $chatId, $userId);
@@ -105,7 +107,7 @@ function currencyEmoji(): string
 {
     $id = preg_replace('/\D+/', '', (string)getSetting('currency_emoji_id', ''));
     if ($id === '') {
-        $id = '5197434882321567830';
+        $id = '5201873447554145566'; // premium cash from catalog
     }
     return '<tg-emoji emoji-id="' . $id . '">💵</tg-emoji>';
 }
@@ -119,55 +121,24 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
         }
     }
 
-    static $defaults = [
-        'ce_welcome_1'  => '5438496463044752972',
-        'ce_welcome_2'  => '5287231198098117669',
-        'ce_welcome_3'  => '5271604874419647061',
-        'ce_welcome_4'  => '5409048419211682843',
-        'ce_welcome_5'  => '5447644880824181073',
-        'ce_welcome_6'  => '5206607081334906820',
-        'ce_join_1'     => '5332455502917949981',
-        'ce_join_2'     => '5303138782004924588',
-        'ce_join_ok'    => '5206607081334906820',
-        'ce_join_no'    => '5210952531676504517',
-        'ce_retry'      => '5375338737028841420',
-        'ce_menu_1'     => '5416041192905265756',
-        'ce_wallet_1'   => '5287231198098117669',
-        'ce_balance'    => '5197434882321567830',
-        'ce_ref_1'      => '5332724926216428039',
-        'ce_ref_2'      => '5271604874419647061',
-        'ce_ref_rocket' => '5195033767969839232',
-        'ce_ref_gift'   => '5461151367559141950',
-        'ce_payout_1'   => '5445355530111437729',
-        'ce_payout_ok'  => '5206607081334906820',
-        'ce_payout_no'  => '5210952531676504517',
-        'ce_card'       => '5445353829304387411',
-        'ce_network'    => '5224450179368767019',
-        'ce_earn_1'     => '5310278924616356636',
-        'ce_target'     => '5310278924616356636',
-        'ce_warn'       => '5447644880824181073',
-        'ce_ok'         => '5206607081334906820',
-        'ce_no'         => '5210952531676504517',
-        'ce_fire'       => '5424972470023104089',
-        'ce_chart'      => '5197503331215361533',
-        'ce_receipt'    => '5444856076954520455',
-        'ce_btn_wallet'    => '5287231198098117669',
-        'ce_btn_referrals' => '5332724926216428039',
-        'ce_btn_payout'    => '5445355530111437729',
-        'ce_btn_earn'      => '5310278924616356636',
-    ];
+    static $defaults = null;
+    if ($defaults === null) {
+        $defaults = premiumCeDefaults();
+    }
 
     static $emojiFallback = [
-        'ce_welcome_1' => '⭐', 'ce_welcome_2' => '💰', 'ce_welcome_3' => '🔗',
+        'ce_welcome_1' => '👋', 'ce_welcome_2' => '💰', 'ce_welcome_3' => '🔗',
         'ce_welcome_4' => '💵', 'ce_welcome_5' => '⚠️', 'ce_welcome_6' => '✅',
         'ce_join_1' => '🏦', 'ce_join_2' => '💬', 'ce_join_ok' => '✅', 'ce_join_no' => '❌',
         'ce_retry' => '🔄', 'ce_menu_1' => '🏠', 'ce_wallet_1' => '💰', 'ce_balance' => '💵',
-        'ce_ref_1' => '📇', 'ce_ref_2' => '🔗', 'ce_ref_rocket' => '🚀', 'ce_ref_gift' => '🎉',
-        'ce_payout_1' => '📤', 'ce_payout_ok' => '✅', 'ce_payout_no' => '❌',
+        'ce_ref_1' => '👥', 'ce_ref_2' => '🔗', 'ce_ref_rocket' => '🚀', 'ce_ref_gift' => '🎁',
+        'ce_payout_1' => '💳', 'ce_payout_ok' => '✅', 'ce_payout_no' => '❌',
         'ce_card' => '💳', 'ce_network' => '🌐', 'ce_earn_1' => '🎯', 'ce_target' => '🎯',
         'ce_warn' => '⚠️', 'ce_ok' => '✅', 'ce_no' => '❌', 'ce_fire' => '🔥',
-        'ce_chart' => '📈', 'ce_receipt' => '🧾',
-        'ce_btn_wallet' => '💰', 'ce_btn_referrals' => '👥', 'ce_btn_payout' => '📤', 'ce_btn_earn' => '🎯',
+        'ce_chart' => '📊', 'ce_receipt' => '🧾',
+        'ce_btn_wallet' => '👛', 'ce_btn_referrals' => '👥', 'ce_btn_payout' => '💳', 'ce_btn_earn' => '🎯',
+        'ce_btn_back' => '⬅️', 'ce_btn_cancel' => '❌', 'ce_btn_agree' => '✅',
+        'ce_btn_retry' => '🔄', 'ce_btn_channel' => '📣',
     ];
 
     $alias = [
@@ -201,10 +172,6 @@ function ce(string $key, string $fallbackEmoji = '⭐'): string
     return '<tg-emoji emoji-id="' . $id . '">' . $inner . '</tg-emoji>';
 }
 
-/**
- * Join checklist = ONLY channels from Admin → Channels table.
- * Payment channel is NEVER required here (notify-only).
- */
 function getMissingChannels(TelegramBot $bot, int $userId): array
 {
     $db = getDB();
