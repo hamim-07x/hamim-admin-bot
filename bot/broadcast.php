@@ -1,6 +1,7 @@
 <?php
 /**
  * Scalable bot-admin broadcast with premium emoji upgrade.
+ * One optional URL button with optional icon_custom_emoji_id.
  */
 require_once __DIR__ . '/premium_emojis.php';
 
@@ -140,13 +141,29 @@ function prepareBroadcastPayload(array $message): array
     ];
 }
 
+/** Build one URL button row (optional premium icon). */
+function broadcastUrlButtonRow(array $btn): ?array
+{
+    $t = trim((string)($btn['text'] ?? ''));
+    $u = trim((string)($btn['url'] ?? ''));
+    if ($t === '' || !preg_match('#^https?://#i', $u)) {
+        return null;
+    }
+    $row = ['text' => mb_substr($t, 0, 64), 'url' => $u];
+    $eid = preg_replace('/\D+/', '', (string)($btn['emoji_id'] ?? ''));
+    if (strlen($eid) >= 8) {
+        $row['icon_custom_emoji_id'] = $eid;
+    }
+    return $row;
+}
+
 function showBroadcastPanel(TelegramBot $bot, int $chatId, int $userId): void
 {
     clearBotState($userId);
     $text  = ce('ce_menu_1') . " <b>Broadcast</b>\n\n";
     $text .= ce('ce_warn') . " Only listed bot admins can use this.\n";
     $text .= ce('ce_ref_rocket') . " Flow: content → preview → confirm.\n";
-    $text .= ce('ce_ok') . " Plain emojis auto-upgrade to premium from your packs.";
+    $text .= ce('ce_ok') . " Plain emojis auto-upgrade to premium.";
 
     $idGo = btnEmojiId('ce_btn_agree', '5021905410089550576');
     $idBack = btnEmojiId('ce_btn_back', '5854967531793550989');
@@ -172,14 +189,15 @@ function askBroadcastContent(TelegramBot $bot, int $chatId, int $userId): void
     botSend($bot, $chatId, $userId, $text, '', ['reply_markup' => $kb]);
 }
 
+/** Max 1 button. */
 function broadcastPreviewMarkup(array $buttons = []): array
 {
     $rows = [];
-    foreach ($buttons as $b) {
-        $t = trim((string)($b['text'] ?? ''));
-        $u = trim((string)($b['url'] ?? ''));
-        if ($t !== '' && $u !== '') {
-            $rows[] = [['text' => $t, 'url' => $u]];
+    $btn = $buttons[0] ?? null;
+    if (is_array($btn)) {
+        $row = broadcastUrlButtonRow($btn);
+        if ($row) {
+            $rows[] = [$row];
         }
     }
     $idOk = btnEmojiId('ce_btn_agree', '5021905410089550576');
@@ -188,12 +206,22 @@ function broadcastPreviewMarkup(array $buttons = []): array
         inlineBtn('Confirm Broadcast', 'bc_confirm', $idOk),
         inlineBtn('Cancel', 'bc_cancel', $idNo),
     ];
-    $rows[] = [inlineBtn('➕ Add Button', 'bc_add_btn', '')];
+    // Only one button allowed — Add or Edit
+    if ($btn && !empty($btn['url'])) {
+        $rows[] = [inlineBtn('✏️ Edit Button', 'bc_add_btn', '')];
+        $rows[] = [inlineBtn('🗑 Remove Button', 'bc_rm_btn', '')];
+    } else {
+        $rows[] = [inlineBtn('➕ Add Button (1 only)', 'bc_add_btn', '')];
+    }
     return TelegramBot::inlineKeyboard($rows);
 }
 
 function showBroadcastPreview(TelegramBot $bot, int $chatId, int $userId, array $payload, array $buttons = []): void
 {
+    // Force max 1 button
+    if ($buttons) {
+        $buttons = [array_values($buttons)[0]];
+    }
     $payload['buttons'] = $buttons;
     setBotState($userId, 'broadcast_preview', $payload);
 
@@ -217,8 +245,15 @@ function showBroadcastPreview(TelegramBot $bot, int $chatId, int $userId, array 
     }
 
     $text  = ce('ce_warn') . " <b>Preview above</b> — users will get this.\n\n";
-    $text .= ce('ce_ok') . " Confirm to start · Cancel to abort.\n";
-    $text .= ce('ce_card') . " Optional: Add Button (name + https link).";
+    $text .= ce('ce_ok') . " Confirm · Cancel\n";
+    $text .= ce('ce_card') . " Optional: <b>1 button</b> (text + URL + premium emoji ID).";
+    if ($buttons && !empty($buttons[0]['text'])) {
+        $b = $buttons[0];
+        $text .= "\n\n" . premiumTag('link') . ' Button: <b>' . htmlspecialchars((string)$b['text']) . '</b>';
+        if (!empty($b['emoji_id'])) {
+            $text .= "\nID: <code>" . htmlspecialchars((string)$b['emoji_id']) . '</code>';
+        }
+    }
     $bot->sendMessage($chatId, $text, [
         'parse_mode' => 'HTML',
         'reply_markup' => broadcastPreviewMarkup($buttons),
@@ -243,6 +278,9 @@ function startBroadcastJob(TelegramBot $bot, int $adminChatId, int $adminId, arr
     }
 
     $buttons = is_array($payload['buttons'] ?? null) ? $payload['buttons'] : [];
+    if ($buttons) {
+        $buttons = [array_values($buttons)[0]];
+    }
     unset($payload['buttons']);
 
     $prog  = ce('ce_ref_rocket') . " <b>Broadcast queued</b>\n\n";
@@ -314,17 +352,10 @@ function processBroadcastBatch(int $jobId, int $batchSize = 40): bool
     $replyMarkup = null;
     if (!empty($job['buttons_json'])) {
         $decoded = json_decode((string)$job['buttons_json'], true);
-        if (is_array($decoded)) {
-            $rows = [];
-            foreach ($decoded as $b) {
-                $t = trim((string)($b['text'] ?? ''));
-                $u = trim((string)($b['url'] ?? ''));
-                if ($t !== '' && preg_match('#^https?://#i', $u)) {
-                    $rows[] = [['text' => $t, 'url' => $u]];
-                }
-            }
-            if ($rows) {
-                $replyMarkup = ['inline_keyboard' => $rows];
+        if (is_array($decoded) && $decoded) {
+            $row = broadcastUrlButtonRow($decoded[0] ?? []);
+            if ($row) {
+                $replyMarkup = ['inline_keyboard' => [[$row]]];
             }
         }
     }

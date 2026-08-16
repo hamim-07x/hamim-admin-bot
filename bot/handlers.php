@@ -53,7 +53,7 @@ function handleMessage(TelegramBot $bot, array $message): void
 
     $isStart = str_starts_with($text, '/start');
     $stateNow = getBotState($userId);
-    $bcStates = ['broadcast_wait', 'broadcast_preview', 'broadcast_btn_text', 'broadcast_btn_url'];
+    $bcStates = ['broadcast_wait', 'broadcast_preview', 'broadcast_btn_text', 'broadcast_btn_url', 'broadcast_btn_emoji'];
     if (!$isStart && !in_array($stateNow, $bcStates, true)) {
         tryDeleteUserMessage($bot, $message);
     }
@@ -106,7 +106,7 @@ function handleMessage(TelegramBot $bot, array $message): void
             }
             $data['pending_btn_text'] = mb_substr($text, 0, 64);
             setBotState($userId, 'broadcast_btn_url', $data);
-            botSend($bot, $chatId, $userId, ce('ce_card') . " Now send the <b>URL</b> for this button (https://…)", '', [
+            botSend($bot, $chatId, $userId, ce('ce_card') . " Now send the <b>URL</b> (https://…)\n\n" . ce('ce_warn') . ' Only <b>1 button</b> is allowed.', '', [
                 'reply_markup' => TelegramBot::inlineKeyboard([
                     [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5019523782004441717'))],
                 ]),
@@ -121,17 +121,44 @@ function handleMessage(TelegramBot $bot, array $message): void
                 botSend($bot, $chatId, $userId, ce('ce_warn') . ' Invalid URL. Send full link starting with https://');
                 return;
             }
-            $buttons = $data['buttons'] ?? [];
-            if (!is_array($buttons)) {
-                $buttons = [];
+            $data['pending_btn_url'] = $url;
+            setBotState($userId, 'broadcast_btn_emoji', $data);
+            botSend($bot, $chatId, $userId,
+                ce('ce_card') . " <b>Premium emoji ID</b> for the button (optional)\n\n"
+                . "Send the numeric <b>emoji-id</b> from your pack.\n"
+                . "Or send <code>/skip</code> for no icon.\n\n"
+                . ce('ce_warn') . ' Example: <code>5021905410089550576</code>',
+                '',
+                [
+                    'reply_markup' => TelegramBot::inlineKeyboard([
+                        [inlineBtn('Skip emoji', 'bc_btn_skip_emoji', '')],
+                        [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5019523782004441717'))],
+                    ]),
+                ]
+            );
+            return;
+        }
+
+        if ($state === 'broadcast_btn_emoji') {
+            $data = getBotStateData($userId);
+            $eid = '';
+            if (!preg_match('#^/skip#i', $text)) {
+                $eid = preg_replace('/\D+/', '', $text);
+                if ($eid !== '' && strlen($eid) < 8) {
+                    botSend($bot, $chatId, $userId, ce('ce_warn') . ' Emoji ID too short. Send full ID or /skip');
+                    return;
+                }
             }
-            $buttons[] = [
+            $btn = [
                 'text' => (string)($data['pending_btn_text'] ?? 'Open'),
-                'url'  => $url,
+                'url'  => (string)($data['pending_btn_url'] ?? ''),
             ];
-            $buttons = array_slice($buttons, 0, 5);
-            unset($data['pending_btn_text'], $data['buttons']);
-            showBroadcastPreview($bot, (int)$chatId, $userId, $data, $buttons);
+            if ($eid !== '') {
+                $btn['emoji_id'] = $eid;
+            }
+            unset($data['pending_btn_text'], $data['pending_btn_url'], $data['buttons']);
+            // Exactly one button
+            showBroadcastPreview($bot, (int)$chatId, $userId, $data, [$btn]);
             return;
         }
 
@@ -265,11 +292,38 @@ function handleCallback(TelegramBot $bot, array $cb): void
             }
             $bot->answerCallback($cbId, 'Button text');
             setBotState($userId, 'broadcast_btn_text', $st);
-            botSend($bot, $chatId, $userId, ce('ce_card') . " Send <b>button name</b> (e.g. Join Channel)", '', [
-                'reply_markup' => TelegramBot::inlineKeyboard([
-                    [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5019523782004441717'))],
-                ]),
-            ]);
+            botSend($bot, $chatId, $userId,
+                ce('ce_card') . " Send <b>button name</b> (max 1 button)\n"
+                . ce('ce_warn') . ' Example: <b>Join Channel</b>',
+                '',
+                [
+                    'reply_markup' => TelegramBot::inlineKeyboard([
+                        [inlineBtn('Cancel', 'bc_cancel', btnEmojiId('ce_btn_cancel', '5019523782004441717'))],
+                    ]),
+                ]
+            );
+            return;
+        }
+        if ($data === 'bc_rm_btn') {
+            $st = getBotStateData($userId);
+            unset($st['buttons']);
+            $bot->answerCallback($cbId, 'Button removed');
+            showBroadcastPreview($bot, $chatId, $userId, $st, []);
+            return;
+        }
+        if ($data === 'bc_btn_skip_emoji') {
+            $st = getBotStateData($userId);
+            if (getBotState($userId) !== 'broadcast_btn_emoji') {
+                $bot->answerCallback($cbId);
+                return;
+            }
+            $bot->answerCallback($cbId, 'No emoji');
+            $btn = [
+                'text' => (string)($st['pending_btn_text'] ?? 'Open'),
+                'url'  => (string)($st['pending_btn_url'] ?? ''),
+            ];
+            unset($st['pending_btn_text'], $st['pending_btn_url'], $st['buttons']);
+            showBroadcastPreview($bot, $chatId, $userId, $st, [$btn]);
             return;
         }
         $bot->answerCallback($cbId);
